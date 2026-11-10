@@ -1,0 +1,14 @@
+# Normalize line endings for a POSIX-first repository: every text file is LF,
+# including on a Windows checkout, because install.sh and the staged copies run
+# through `sh` and `node` unchanged.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+
+*.png binary
+*.ico binary

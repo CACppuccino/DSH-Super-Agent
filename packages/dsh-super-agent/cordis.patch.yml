@@ -1,0 +1,5 @@
+# dsh-super-agent bundle layer: one Host row owns the orchestrator, its model
+# tools, and the panel API. The Client half is loaded from the same package.
+- insert:
+    - id: dsh-super-agent
+      name: '@local/dsh-super-agent'

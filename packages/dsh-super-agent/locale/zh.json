@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Super Agent",
+    "description": "在对话面板中把任务分发给持久的工作会话，跟踪进度，并在不同 workspace 之间作业。"
+  }
+}

@@ -1,0 +1,21 @@
+# Dependencies and build state — never part of a commit. The installer copies
+# the three packages into $DSH_HOME at install time, so no node_modules or
+# vendored copy belongs here.
+node_modules/
+vendor/
+dist/
+build/
+*.tgz
+*.log
+.npm/
+.pnpm-store/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.vscode/
+.idea/
+*.swp

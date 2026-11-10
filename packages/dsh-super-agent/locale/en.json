@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Super Agent",
+    "description": "Delegate work to persistent worker conversations from a chat panel, follow their progress, and move between workspaces."
+  }
+}

@@ -1,0 +1,35 @@
+# dsh-suite bundle layer: one package that installs the Super Agent panel and
+# the authenticated remote endpoint the DSH Remote iPhone app connects to.
+#
+# The two rows still belong to their own packages (`@local/dsh-super-agent`,
+# `dsh-remote`); this layer only inserts them with the defaults the phone
+# expects. A profile that wants only the remote half can depend on
+# `dsh-remote` directly instead of this suite.
+#
+# Override either row in the profile's own cordis.patch.yml, for example:
+#
+#   - id: dsh-remote
+#     config:
+#       listen: { host: 127.0.0.1, port: 3443 }
+#       tls:
+#         certFile: /Users/me/.dsh/remote/cert.pem
+#         keyFile: /Users/me/.dsh/remote/key.pem
+#
+# A patch replaces the targeted row's whole config, so restate every key the
+# row owns when overriding it.
+- insert:
+    - id: dsh-super-agent
+      name: '@local/dsh-super-agent'
+    - id: dsh-remote
+      name: dsh-remote
+      config:
+        enabled: true
+        path: /remote-api
+        # LAN + tailnet reachable: the iPhone app must reach this port. The
+        # token below is required before any method answers.
+        listen:
+          host: 0.0.0.0
+          port: 3443
+        auth:
+          tokenFile: !!js dshHomePath('remote/token')
+        maxBodyBytes: 33554432

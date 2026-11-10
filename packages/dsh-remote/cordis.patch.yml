@@ -1,0 +1,29 @@
+# dsh-remote bundle patch. Applied after @deepseek-ai/dsh-web-app, so the
+# connection service this plugin injects is already composed.
+#
+# Defaults are deliberately remote-ready but token-guarded:
+#   - the standalone endpoint binds all interfaces on 3443
+#   - the bearer token is auto-created at $DSH_HOME/remote/token on first boot
+#   - path prefix is /remote-api (the iOS app default)
+#   - TLS is off by default: use a Tailscale tailnet (WireGuard already
+#     encrypts transport) or set tls.certFile / tls.keyFile in a later layer.
+#
+# Override in the profile's own cordis.patch.yml (or $DSH_HOME/cordis.patch.yml):
+#
+#   - id: dsh-remote
+#     config:
+#       listen: { host: 127.0.0.1, port: 3443 }
+#       tls:
+#         certFile: /Users/me/.dsh/remote/cert.pem
+#         keyFile: /Users/me/.dsh/remote/key.pem
+- insert:
+    - id: dsh-remote
+      name: dsh-remote
+      config:
+        path: /remote-api
+        listen:
+          host: 0.0.0.0
+          port: 3443
+        auth:
+          tokenFile: !!js dshHomePath('remote/token')
+        maxBodyBytes: 33554432
