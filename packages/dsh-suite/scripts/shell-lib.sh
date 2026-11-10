@@ -94,9 +94,9 @@ find_dsh_clis() {
   command -v dsh 2>/dev/null || true
 }
 
-# Ensure pnpm's hoisted layout: the suite's vendored plugin packages must land
-# in the profile's own node_modules, because a bundle patch row resolves by
-# bare package name from the profile directory.
+# Ensure pnpm's hoisted layout: the staged plugin packages must land in the
+# profile's own node_modules, because a bundle patch row resolves by bare
+# package name from the profile directory.
 ensure_workspace_yaml() {
   workspace="$PROFILE_DIR/pnpm-workspace.yaml"
   if [ ! -f "$workspace" ]; then

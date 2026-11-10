@@ -86,7 +86,7 @@ else
       || die "更新 profile manifest 失败"
     # A profile that previously listed the two plugins on their own still has
     # their symlinks in node_modules; one install prunes them so every row
-    # resolves to the suite's vendored copies.
+    # resolves to the staged copies inside the suite snapshot.
     run_pnpm_install best-effort
   else
     warn "dsh CLI 不可用，回退到 profile package.json + pnpm"
