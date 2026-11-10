@@ -76,6 +76,14 @@ curl -fsSL https://raw.githubusercontent.com/CACppuccino/DSH-Super-Agent/main/in
 让新 bundle 行立即生效，然后自动验证。不想让它动正在用的 App 就去掉 `--restart`，
 装完自己「退出并重新打开」一次，再运行 `./install.sh --verify-only`。
 
+> 如果 `raw.githubusercontent.com` 当前网络不可达（国内常见），用仓库压缩包这一行代替：
+>
+> ```sh
+> tmp=$(mktemp -d) && curl -fsSL https://codeload.github.com/CACppuccino/DSH-Super-Agent/tar.gz/refs/heads/main | tar -xz -C "$tmp" && "$tmp/DSH-Super-Agent-main/install.sh" --restart
+> ```
+>
+> 压缩包走 `codeload.github.com`（通常可达）。`install.sh` 自己下载源码时用的也是这个地址。
+
 脚本依次做这些事：
 
 1. 找 `$DSH_HOME`（默认 `~/.dsh`）和 profile（默认 `desktop`，可用 `--profile`）；
