@@ -80,8 +80,8 @@ self_root() {
   return 0
 }
 
-# Download and unpack the branch tarball; echoes the checkout root.
-fetch_root() {
+ROOT=$(self_root)
+if [ -z "$ROOT" ]; then
   command -v curl >/dev/null 2>&1 || die "找不到 curl：请先 git clone 仓库再运行 ./install.sh"
   command -v tar >/dev/null 2>&1 || die "找不到 tar：请先 git clone 仓库再运行 ./install.sh"
   TMP=$(mktemp -d "${TMPDIR:-/tmp}/dsh-super-agent.XXXXXX") || die "无法创建临时目录"
@@ -93,15 +93,9 @@ fetch_root() {
   curl -fsSL --retry 2 --connect-timeout 20 "$ARCHIVE_URL" -o "$TMP/repo.tar.gz" \
     || die "下载失败：$ARCHIVE_URL（可以用 DSH_SUPER_AGENT_ARCHIVE 指定镜像/代理地址）"
   tar -xzf "$TMP/repo.tar.gz" -C "$TMP" || die "解压失败：$TMP/repo.tar.gz"
-  root=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -n 1)
-  [ -n "$root" ] && [ -f "$root/packages/dsh-suite/install.sh" ] \
+  ROOT=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+  [ -n "$ROOT" ] && [ -f "$ROOT/packages/dsh-suite/install.sh" ] \
     || die "压缩包里没有 packages/dsh-suite/install.sh：${ARCHIVE_URL}"
-  printf '%s' "$root"
-}
-
-ROOT=$(self_root)
-if [ -z "$ROOT" ]; then
-  ROOT=$(fetch_root)
   step "临时仓库：$ROOT"
 else
   step "仓库：$ROOT"
