@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { PendingStore } from './pending.js'
 
 export const PLUGIN_NAME = 'dsh-super-agent'
 const PROGRESS_LIMIT = 80
@@ -30,6 +31,7 @@ Tools:
 - superagent_create_workspace: create a workspace without starting a worker.
 - superagent_create_conversation: open another Super Agent conversation for a separate long-running thread.
 - superagent_list_conversations: list Super Agent conversations and workers.
+- superagent_pending_decision: register a question the user must decide (action "create"), list unanswered decisions (action "list"), or mark one resolved (action "resolve"). The panel shows each unresolved decision inline with option buttons and a free-text answer, and returns the user's answer as a user message in this conversation.
 
 Planning tools such as todo_write and the goal tools stay available; they do not touch the host.
 
@@ -45,7 +47,7 @@ Working rules:
 9. A worker is a persistent conversation, not a subagent. It can receive multiple assignments.
 10. Do not create a new Super Agent conversation unless the user asks for a separate thread or the work is clearly unrelated and long-running.
 11. Delegation always goes through superagent_dispatch_task. One-shot subagent, workflow, teammate, and team-task tools are unavailable; those bypass the persistent worker conversation that this panel tracks.
-12. You do not have an ask_user_question tool and this panel cannot render question cards. Ask in a normal assistant message: write the question and any options as text, then wait for the user's reply.`
+12. You do not have an ask_user_question tool and its built-in cards are unavailable. When the user must choose, call superagent_pending_decision with action "create" plus the question, optional context, and options. Do not just write the question and any options as text and stop: the pending decision card is the interactive path, and the user's answer arrives as a user message in this conversation.`
 
 /** The fixed system prompt for worker conversations. */
 export const WORKER_PROMPT = `You are a worker agent launched by the Super Agent.
@@ -260,6 +262,25 @@ const REPORT_SCHEMA = {
   required: ['summary'],
 }
 
+const PENDING_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    action: { type: 'string', enum: ['create', 'list', 'resolve'], description: 'create registers a question; list returns unanswered decisions; resolve marks one answered.' },
+    question: { type: 'string', description: 'For create: the decision or question the user must answer.' },
+    context: { type: 'string', description: 'For create: optional background, trade-offs, or details shown under the question.' },
+    options: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'For create: optional answer choices rendered as buttons. Omit for free text only.',
+    },
+    id: { type: 'string', description: 'For resolve: the pending decision id returned by create or list.' },
+    answer: { type: 'string', description: 'For resolve: the answer to record.' },
+    include_resolved: { type: 'boolean', description: 'For list: include already answered decisions. Defaults to false.' },
+  },
+  required: ['action'],
+}
+
 const EMPTY_SCHEMA = { type: 'object', additionalProperties: false, properties: {} }
 
 /**
@@ -271,13 +292,15 @@ export class Orchestrator {
    * @param {import('@deepseek-ai/cordis').Context} options.ctx
    * @param {import('./state.js').StateStore} options.store
    * @param {string} options.stateDir
+   * @param {import('./pending.js').PendingStore} [options.pendingStore]
    * @param {() => number} [options.now]
    */
-  constructor({ ctx, store, stateDir, now = () => Date.now() }) {
+  constructor({ ctx, store, stateDir, pendingStore, now = () => Date.now() }) {
     this.ctx = ctx
     this.store = store
     this.stateDir = stateDir
     this.now = now
+    this.pending = pendingStore || new PendingStore(join(stateDir, 'pending.json'), { now })
     this.decorated = new WeakSet()
     this.bindings = new Map()
     this.sessionLocks = new Map()
@@ -287,7 +310,7 @@ export class Orchestrator {
 
   /** Load durable state, downgrade orphaned statuses, and re-decorate live agents. */
   async load() {
-    await this.store.load()
+    await Promise.all([this.store.load(), this.pending.load()])
     let changed = false
     for (const conversation of Object.values(this.store.current.conversations)) {
       if (conversation.status === 'running') {
@@ -353,6 +376,7 @@ export class Orchestrator {
       version: 1,
       conversations,
       workspaces,
+      pending: this.pending.list(),
       activeConversationId: latest?.id ?? null,
       diagnostics: {
         decorationErrors: this.decorationErrors.slice(-5),
@@ -704,15 +728,119 @@ export class Orchestrator {
     }
   }
 
+  /** Resolve the Super Agent conversation that owns a pending decision. */
+  pendingOwner(conversationId) {
+    if (typeof conversationId === 'string' && conversationId.length > 0) return this.requireSuper(conversationId)
+    const latest = this.store.latestSuper()
+    if (!latest) throw new Error('No Super Agent conversation exists yet; open the panel first')
+    return latest
+  }
+
+  /** Register one pending decision for a Super Agent conversation. */
+  async createPendingDecision({ conversationId, question, context, options } = {}) {
+    const owner = this.pendingOwner(conversationId)
+    const item = await this.pending.create({ conversationId: owner.id, question, context, options })
+    await this.store.update((state) => {
+      const stored = state.conversations[owner.id]
+      if (stored) {
+        stored.updatedAt = this.now()
+        stored.lastMessage = `Pending decision: ${clip(item.question, 120)}`
+      }
+    })
+    return item
+  }
+
+  /** List durable decisions; unresolved only unless asked otherwise. */
+  listPendingDecisions({ conversationId, includeResolved = false } = {}) {
+    return this.pending.list({ conversationId, includeResolved: includeResolved === true })
+  }
+
+  /** Resolve one decision without delivering a message (the tool's own path). */
+  async resolvePendingDecision({ id, answer, conversationId } = {}) {
+    const scoped = typeof conversationId === 'string' && conversationId.length > 0 ? conversationId : undefined
+    const { item, changed } = await this.pending.resolve({ id, answer, conversationId: scoped })
+    return { ok: true, item, changed }
+  }
+
+  /**
+   * Answer one decision from the panel: persist it, then deliver the answer to
+   * the owning Super Agent as an ordinary user message so it can act.
+   */
+  async answerPendingDecision({ id, answer } = {}) {
+    const existing = this.pending.get(typeof id === 'string' ? id : '')
+    if (!existing) throw new Error(`Unknown pending decision: ${id ?? '(missing id)'}`)
+    if (existing.resolved_at !== null) {
+      return { item: { ...existing, options: existing.options.slice() }, delivered: false, conversationId: existing.conversation_id }
+    }
+    const conversation = this.requireSuper(existing.conversation_id)
+    if (typeof answer !== 'string' || answer.trim().length === 0) throw new Error('answer is required')
+    const { item, changed } = await this.pending.resolve({ id: existing.id, answer, conversationId: conversation.id })
+    if (!changed) {
+      return { item, delivered: false, conversationId: conversation.id }
+    }
+    try {
+      await this.store.update((state) => {
+        const stored = state.conversations[conversation.id]
+        if (stored) {
+          stored.updatedAt = this.now()
+          stored.lastMessage = `Decision answered: ${clip(item.question, 120)}`
+        }
+      })
+      const agent = await this.ensureAgent(conversation)
+      const body = [
+        `You asked the user a pending decision: ${item.question}`,
+        item.context ? `Context: ${clip(item.context, 2000)}` : '',
+        `The user answered: ${item.answer}`,
+      ].filter(Boolean).join('\n\n')
+      await this.sendToAgent(agent, body, { form: 'user' })
+    } catch (error) {
+      // Put the decision back so the user can retry instead of losing it.
+      await this.pending.update((pending) => {
+        const stored = pending.items[item.id]
+        if (stored) {
+          stored.resolved_at = null
+          stored.answer = ''
+        }
+      }).catch(() => {})
+      throw error
+    }
+    return { item, delivered: true, conversationId: conversation.id }
+  }
+
+  /** The `superagent_pending_decision` tool implementation. */
+  async pendingDecision({ conversationId, action, question, context, options, id, answer, includeResolved } = {}) {
+    switch (action) {
+      case 'create': {
+        const item = await this.createPendingDecision({ conversationId, question, context, options })
+        return { ok: true, item }
+      }
+      case 'list':
+        return {
+          ok: true,
+          items: this.listPendingDecisions({ conversationId, includeResolved }),
+        }
+      case 'resolve': {
+        const outcome = await this.resolvePendingDecision({ id, answer, conversationId })
+        return outcome
+      }
+      default:
+        throw new Error('action must be create, list, or resolve')
+    }
+  }
+
   /** Deliver a message to an already-live or resumable agent. */
   async sendToAgent(agent, text, { form = 'relay', summary } = {}) {
     const body = String(text ?? '')
     if (body.length === 0) return
-    // A plugin-sourced user message turns these relays and notices into
-    // compact transcript rows instead of messages from the human user.
+    // A plugin-sourced user message turns relays and notices into compact
+    // transcript rows. A pending-decision answer is the human's own message:
+    // it carries only `source.kind: 'user'`, never the plugin source, so DSH's
+    // agent loop and transcript treat it exactly like a typed message.
     const source = form === 'notice'
       ? { kind: PLUGIN_NAME, plugin: PLUGIN_NAME, form: 'notice', summary: clip(summary ?? body, 120) }
-      : { kind: PLUGIN_NAME, plugin: PLUGIN_NAME, form: 'relay' }
+      : form === 'relay'
+        ? { kind: PLUGIN_NAME, plugin: PLUGIN_NAME, form: 'relay' }
+        : { kind: 'user' }
     const message = {
       id: `superagent-${randomUUID()}`,
       role: 'user',
@@ -857,7 +985,7 @@ export class Orchestrator {
     const denied = conversation.kind === 'super' ? SUPER_DENY : WORKER_DENY
     if (!denied.includes(exec.name)) return undefined
     if (exec.name === 'ask_user_question') {
-      return 'ask_user_question is unavailable here: ask in a normal message.'
+      return 'ask_user_question is unavailable here: ask in a normal message or use superagent_pending_decision.'
     }
     return conversation.kind === 'super'
       ? `${exec.name} is unavailable in the Super Agent conversation; dispatch a worker for host work.`
@@ -906,6 +1034,19 @@ export class Orchestrator {
         'List every Super Agent conversation and worker conversation.',
         EMPTY_SCHEMA,
         async () => orchestrator.listConversations()),
+      tool('superagent_pending_decision',
+        'Ask the user to decide something without a round trip: action "create" registers an inline question card (optional context and option buttons) for this Super Agent conversation. Action "list" returns unanswered decisions; action "resolve" records an answer. The panel delivers the user\'s answer back to this conversation as a user message.',
+        PENDING_SCHEMA,
+        async (args) => orchestrator.pendingDecision({
+          conversationId,
+          action: requireString(args.action, 'action'),
+          question: args.question,
+          context: args.context,
+          options: args.options,
+          id: args.id,
+          answer: args.answer,
+          includeResolved: args.include_resolved === true,
+        })),
     ]
   }
 

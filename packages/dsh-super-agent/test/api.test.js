@@ -122,3 +122,96 @@ test('unknown routes and unknown workers return structured errors', async () => 
   assert.equal(worker.status, 404)
   assert.match(worker.body.error, /Unknown worker/)
 })
+
+test('pending decisions can be created, listed, and resolved through the API', async () => {
+  const { api, host } = await setup()
+  const boot = await api.request({ method: 'POST', pathname: '/superagent/api/bootstrap', headers })
+  const superId = boot.body.activeConversationId
+
+  const created = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/pending',
+    headers,
+    body: { question: 'Which release channel?', context: 'The worker prepared both.', options: ['stable', 'beta'] },
+  })
+  assert.equal(created.status, 200)
+  const item = created.body.item
+  assert.match(item.id, /^pending-/)
+  assert.equal(item.conversation_id, superId)
+  assert.deepEqual(item.options, ['stable', 'beta'])
+  assert.equal(item.resolved_at, null)
+
+  const listed = await api.request({ method: 'GET', pathname: '/superagent/api/pending', headers })
+  assert.equal(listed.status, 200)
+  assert.deepEqual(listed.body.pending.map((entry) => entry.id), [item.id])
+
+  const state = await api.request({ method: 'GET', pathname: '/superagent/api/state', headers })
+  assert.deepEqual(state.body.pending.map((entry) => entry.id), [item.id])
+  assert.equal(state.body.conversations[0].lastMessage, 'Pending decision: Which release channel?')
+
+  const resolved = await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/pending/${item.id}/resolve`,
+    headers,
+    body: { answer: 'beta' },
+  })
+  assert.equal(resolved.status, 200)
+  assert.equal(resolved.body.delivered, true)
+  assert.equal(resolved.body.conversationId, superId)
+  assert.equal(resolved.body.item.answer, 'beta')
+  assert.equal(typeof resolved.body.item.resolved_at, 'number')
+
+  // The answer arrives in the Super Agent conversation as the human's own
+  // message, not a plugin-sourced compact notice row.
+  const inbox = host.get(superId).inbox
+  const delivered = inbox.at(-1)
+  assert.equal(delivered.role, 'user')
+  assert.deepEqual(delivered.source, { kind: 'user' })
+  assert.match(delivered.content[0].text, /Which release channel\?/)
+  assert.match(delivered.content[0].text, /The user answered: beta/)
+
+  // Answered items disappear from the default list but stay durable and a
+  // retry is idempotent (no duplicate conversation message).
+  const after = await api.request({ method: 'GET', pathname: '/superagent/api/pending', headers })
+  assert.deepEqual(after.body.pending, [])
+  const history = await api.request({ method: 'GET', pathname: '/superagent/api/pending', query: { includeResolved: '1' }, headers })
+  assert.equal(history.body.pending.length, 1)
+  assert.equal(history.body.pending[0].answer, 'beta')
+  const beforeRetry = inbox.length
+  const retry = await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/pending/${item.id}/resolve`,
+    headers,
+    body: { answer: 'stable' },
+  })
+  assert.equal(retry.status, 200)
+  assert.equal(retry.body.delivered, false)
+  assert.equal(retry.body.item.answer, 'beta')
+  assert.equal(inbox.length, beforeRetry)
+})
+
+test('pending decisions validate input and expose structured errors', async () => {
+  const { api } = await setup()
+  await api.request({ method: 'POST', pathname: '/superagent/api/bootstrap', headers })
+
+  const blank = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/pending',
+    headers,
+    body: { question: '   ' },
+  })
+  assert.equal(blank.status, 400)
+  assert.match(blank.body.error, /question is required/)
+
+  const missing = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/pending/pending-missing/resolve',
+    headers,
+    body: { answer: 'x' },
+  })
+  assert.equal(missing.status, 404)
+  assert.match(missing.body.error, /Unknown pending decision/)
+
+  const unauthorized = await api.request({ method: 'GET', pathname: '/superagent/api/pending', headers: {} })
+  assert.equal(unauthorized.status, 403)
+})

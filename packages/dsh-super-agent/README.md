@@ -12,7 +12,7 @@ The Super Agent is a persistent orchestrator. It does not operate the computer i
 - open additional Super Agent conversations for separate long-running threads;
 - receive worker progress notices as hooks on Session events and relay them to the user.
 
-The panel shows the active Super Agent chat in the center and a conversation history rail on the right. The rail groups workers under the Super Agent conversation that launched them; clicking a conversation opens its detail. The Super Agent center embeds the stock DSH `conversation.content` factory (the same chat/composer surface as a normal conversation), wrapped in the retained Session's `SessionProvider`; a slim strip above it keeps the live worker count and latest progress visible. Worker conversations stay in the panel's compact read-only transcript and can be opened in the normal DSH conversation view. Assistant replies and worker progress render Markdown through the stock `@deepseek-ai/dsh-client-ui-primitives` `MarkdownText` component, so headings, lists, links, tables, and fenced code blocks use the same styling, sanitization, and copy behavior as the built-in chat.
+The panel shows the active Super Agent chat in the center and a conversation history rail on the right. The rail groups workers under the Super Agent conversation that launched them; clicking a conversation opens its detail. Below the conversation list, a **待决策项 / Pending decisions** section lists unanswered questions the Super Agent registered with `superagent_pending_decision`. Both rail sections collapse independently and remember their state across reloads. Clicking a pending item opens its question card in the main conversation area with optional context, choice buttons, and a free-text answer; submitting removes it from the rail, collapses the card automatically, and delivers the answer to the Super Agent as a user message. The Super Agent center embeds the stock DSH `conversation.content` factory (the same chat/composer surface as a normal conversation), wrapped in the retained Session's `SessionProvider`; a slim strip above it keeps the live worker count and latest progress visible. Worker conversations stay in the panel's compact read-only transcript and can be opened in the normal DSH conversation view. Assistant replies and worker progress render Markdown through the stock `@deepseek-ai/dsh-client-ui-primitives` `MarkdownText` component, so headings, lists, links, tables, and fenced code blocks use the same styling, sanitization, and copy behavior as the built-in chat.
 
 ## Install
 
@@ -29,7 +29,7 @@ For a profile launched by the `dsh` CLI, the equivalent command is:
 dsh plugin --profile "$DSH_PROFILE" add <absolute path to this directory>
 ```
 
-State is kept under `$DSH_HOME/state/dsh-super-agent/` (override with `DSH_SUPERAGENT_STATE_DIR`). Desktop keeps that historical root; every other profile uses `$DSH_HOME/state/dsh-super-agent/profiles/<profile>/`, so two DSH processes sharing one home never write the same JSON catalog. The directory contains the conversation catalog and the default workspace directories. Worker sessions are normal DSH Sessions and persist like any other conversation.
+State is kept under `$DSH_HOME/state/dsh-super-agent/` (override with `DSH_SUPERAGENT_STATE_DIR`). Desktop keeps that historical root; every other profile uses `$DSH_HOME/state/dsh-super-agent/profiles/<profile>/`, so two DSH processes sharing one home never write the same JSON catalog. The directory contains the conversation catalog (`state.json`), the durable pending-decision queue (`pending.json`), and the default workspace directories. Both JSON files are written atomically. Worker sessions are normal DSH Sessions and persist like any other conversation.
 
 ## Using it
 
@@ -41,7 +41,8 @@ State is kept under `$DSH_HOME/state/dsh-super-agent/` (override with `DSH_SUPER
 
    The Super Agent calls `superagent_dispatch_task`, creates a worker Session in that workspace, and tells you the worker id. As the worker reports or finishes a turn, a progress notice wakes the Super Agent and it relays the meaningful part.
 4. Use the right rail to inspect the worker conversation. Click **Open full conversation** to see it in the normal DSH conversation view.
-5. **New conversation** can place a new Super Agent conversation in any workspace the Harness knows, or create a new workspace path. The workspace picker includes all registered workspaces, not only the ones this plugin created.
+5. When the Super Agent needs a decision, it registers a pending item. The **待决策项 / Pending decisions** section below the conversation list shows it; click the item, choose an option or type an answer, then submit. The item leaves the rail, the card collapses automatically, and the Super Agent receives the answer as a user message. Both rail sections have independent collapse buttons whose state survives a reload.
+6. **New conversation** can place a new Super Agent conversation in any workspace the Harness knows, or create a new workspace path. The workspace picker includes all registered workspaces, not only the ones this plugin created.
 
 ## Model tools
 
@@ -57,6 +58,7 @@ Super Agent sessions receive:
 | `superagent_create_workspace` | Prepare a workspace. |
 | `superagent_create_conversation` | Open another Super Agent conversation. |
 | `superagent_list_conversations` | List all Super Agent and worker conversations. |
+| `superagent_pending_decision` | Register an inline pending decision (`create`), list unanswered decisions (`list`), or record an answer (`resolve`) for this Super Agent conversation. The panel renders the card and sends the user's answer back as a user message. |
 
 Worker sessions receive `superagent_report_progress`, which records progress and relays a notice to the parent Super Agent immediately.
 
@@ -68,6 +70,7 @@ Super Agent sessions are additionally **denied the built-in host-side tools**: s
 index.js                  Host entry: services, Session hooks, HTTP routes
 lib/orchestrator.js       Conversations, workspaces, dispatch, progress relay
 lib/state.js              Atomic JSON catalog and bounded progress log
+lib/pending.js            Atomic pending-decision queue
 lib/api.js                Same-origin panel API
 client.js                 Sidebar entry, panel shell, embedded stock chat, history rail
 locale/, icon.svg         Plugin Manager metadata
@@ -76,7 +79,7 @@ test/                     Node test suite for host and client logic
 
 The Host half uses the live Harness services `agents`, `sessionController`, `workspaceRegistry`, `systemPrompt`, `tools`, and `webServer`. It decorates an Agent when its Session belongs to the catalog:
 
-- Super Agent: a fixed orchestrator prompt and eight tools, registered on the Agent's scoped `tools` and `systemPrompt`; the built-in one-shot `subagent`, `workflow`, and teammate tools are denied so delegation stays on the tracked worker path.
+- Super Agent: a fixed orchestrator prompt and nine tools, registered on the Agent's scoped `tools` and `systemPrompt`; the built-in one-shot `subagent`, `workflow`, and teammate tools are denied so delegation stays on the tracked worker path.
 - Worker: a worker prompt and `superagent_report_progress`.
 
 Worker progress is observed two ways:
@@ -94,7 +97,7 @@ The Client half uses the public Client services `sessions`, `uiWorkspace`, `slot
 node --test test/*.test.js
 ```
 
-The suite covers the state store, dispatch/workspace/progress orchestration, HTTP authorization and routes, and the Client's pure transcript/grouping registration logic. It uses in-process fakes and temporary directories; no model or live Session is needed.
+The suite covers the state store, the pending-decision store, dispatch/workspace/progress orchestration, HTTP authorization and routes (including pending create/list/resolve and answer delivery), the Client's pure transcript/grouping/registration logic, rail section ordering and collapse persistence, the inline pending card, and the auto-dismiss answered state. It uses in-process fakes and temporary directories; no model or live Session is needed.
 
 ## Remote and multiple profiles
 

@@ -16,6 +16,12 @@ window.__ModuleLoader__.load({
     const REQUEST_HEADER = { 'x-superagent-request': '1' }
     const SELECTED_KEY = 'dsh-super-agent:selected'
     const STOCK_CHAT_KEY = 'dsh-super-agent:stock-chat'
+    const RAIL_VISIBLE_KEY = 'dsh-super-agent:rail'
+    const RAIL_SECTION_KEYS = {
+      conversations: 'dsh-super-agent:rail:conversations',
+      pending: 'dsh-super-agent:rail:pending',
+    }
+    const PENDING_ANSWER_DISMISS_MS = 1800
     const SURFACE_STOCK = 'stock'
     const SURFACE_CUSTOM = 'custom'
 
@@ -25,6 +31,23 @@ window.__ModuleLoader__.load({
         title: 'Super Agent',
         subtitle: '把任务分发给持久的工作会话，并在这里跟踪进度。',
         conversations: '对话',
+        pending: '待决策项',
+        pendingEmpty: '没有待决策的问题。',
+        pendingAnswerLabel: '回答',
+        pendingPlaceholder: '输入你的回答，或选择上方选项…',
+        pendingSubmit: '提交回答',
+        pendingSubmitting: '提交中…',
+        pendingAnswered: '已回答',
+        pendingAnswerRequired: '请选择选项或输入回答。',
+        pendingSubmitFailed: '提交回答失败',
+        pendingCardHint: '回答会作为用户消息发送给 Super Agent。',
+        pendingOptions: '{count} 个选项',
+        pendingOpen: '打开待决策项',
+        pendingDismiss: '关闭回答卡片',
+        expandConversations: '展开对话列表',
+        collapseConversations: '折叠对话列表',
+        expandPending: '展开待决策项',
+        collapsePending: '折叠待决策项',
         superConversations: 'Super Agent 对话',
         workers: '工作会话',
         otherWorkers: '其他工作会话',
@@ -99,6 +122,23 @@ window.__ModuleLoader__.load({
         title: 'Super Agent',
         subtitle: 'Delegate work to persistent worker conversations and follow their progress here.',
         conversations: 'Conversations',
+        pending: 'Pending decisions',
+        pendingEmpty: 'No pending decisions.',
+        pendingAnswerLabel: 'Answer',
+        pendingPlaceholder: 'Type your answer, or choose an option above…',
+        pendingSubmit: 'Submit answer',
+        pendingSubmitting: 'Submitting…',
+        pendingAnswered: 'Answered',
+        pendingAnswerRequired: 'Choose an option or enter an answer.',
+        pendingSubmitFailed: 'Could not submit the answer',
+        pendingCardHint: 'Your answer is sent to the Super Agent as a user message.',
+        pendingOptions: '{count} options',
+        pendingOpen: 'Open pending decision',
+        pendingDismiss: 'Dismiss answer card',
+        expandConversations: 'Expand conversations',
+        collapseConversations: 'Collapse conversations',
+        expandPending: 'Expand pending decisions',
+        collapsePending: 'Collapse pending decisions',
         superConversations: 'Super Agent conversations',
         workers: 'Workers',
         otherWorkers: 'Other workers',
@@ -280,7 +320,22 @@ window.__ModuleLoader__.load({
 .sa-rail-head { display: flex; align-items: center; gap: 8px; padding: 12px 13px 9px; }
 .sa-rail-title { font-size: 12px; font-weight: 650; letter-spacing: .03em; text-transform: uppercase; color: var(--dsw-alias-label-secondary); }
 .sa-rail-count { font-size: 11px; color: var(--dsw-alias-label-secondary); }
-.sa-rail-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 2px 8px 12px; }
+.sa-rail-sections { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.sa-rail-section { display: flex; flex-direction: column; min-height: 0; }
+.sa-rail-section.conversations { flex: 1 1 auto; }
+.sa-rail-section.pending { flex: 0 1 auto; max-height: 46%; border-top: 1px solid var(--dsw-alias-border-l1); }
+.sa-rail-section.pending.expanded { flex: 0 1 46%; }
+.sa-rail-section.collapsed { flex: 0 0 auto; max-height: none; }
+.sa-rail-section-head { display: flex; align-items: center; gap: 7px; width: 100%; padding: 9px 12px 7px;
+  border: 0; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; cursor: pointer; text-align: left; }
+.sa-rail-section-head:hover { color: var(--dsw-alias-label-primary); }
+.sa-rail-section-title { font-size: 12px; font-weight: 650; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--dsw-alias-label-secondary); }
+.sa-rail-section-count { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.sa-rail-section-head .sa-rail-chevron { flex: 0 0 auto; color: var(--dsw-alias-label-caption);
+  transition: transform .15s ease; transform: rotate(0deg); }
+.sa-rail-section.collapsed .sa-rail-section-head .sa-rail-chevron { transform: rotate(-90deg); }
+.sa-rail-section-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 2px 8px 12px; }
 .sa-group { margin-top: 7px; }
 .sa-group-head { display: flex; align-items: center; gap: 7px; padding: 7px 7px 6px; border-radius: 8px;
   color: var(--dsw-alias-label-secondary); font-size: 11px; font-weight: 650; }
@@ -308,6 +363,44 @@ window.__ModuleLoader__.load({
 .sa-badge.warn { color: var(--dsw-alias-state-warn-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 35%, transparent); }
 .sa-badge.error { color: var(--dsw-alias-state-error-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 35%, transparent); }
 .sa-rail-empty { padding: 22px 14px; color: var(--dsw-alias-label-secondary); font-size: 12.5px; text-align: center; line-height: 1.6; }
+.sa-pending-mark { flex: 0 0 auto; display: grid; place-items: center; width: 17px; height: 17px; margin-top: 2px;
+  border-radius: 50%; background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 16%, transparent);
+  color: var(--dsw-alias-state-warn-primary); font-size: 10.5px; font-weight: 700; }
+.sa-pending-item .sa-item-message { -webkit-line-clamp: 2; }
+.sa-pending-inline { flex: 0 0 auto; padding: 10px 26px 0; }
+.sa-pending-card { width: 100%; max-width: 840px; max-height: 46vh; overflow-y: auto; margin: 0 auto;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 32%, var(--dsw-alias-border-l1));
+  border-radius: 12px; background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 5%, var(--dsw-alias-bg-layer-1));
+  padding: 12px 14px; font-size: 13px; }
+.sa-pending-card.answered { border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 32%, var(--dsw-alias-border-l1));
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 5%, var(--dsw-alias-bg-layer-1)); }
+.sa-pending-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.sa-pending-card-label { font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--dsw-alias-state-warn-primary); }
+.sa-pending-card.answered .sa-pending-card-label { color: var(--dsw-alias-state-success-primary); }
+.sa-pending-card-check { color: var(--dsw-alias-state-success-primary); font-weight: 700; }
+.sa-pending-card-close { margin-left: auto; }
+.sa-pending-question { font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.sa-pending-context { margin-top: 6px; color: var(--dsw-alias-label-secondary); font-size: 12.5px; line-height: 1.55; }
+.sa-pending-options { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
+.sa-pending-option { max-width: 100%; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; font-size: 12.5px;
+  line-height: 1.4; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.sa-pending-option:hover { background: var(--dsw-alias-bg-layer-2); }
+.sa-pending-option.selected { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, var(--dsw-alias-bg-layer-1)); }
+.sa-pending-free { margin-top: 9px; }
+.sa-pending-free textarea { width: 100%; min-height: 54px; max-height: 150px; resize: vertical; box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; outline: none; padding: 8px 10px;
+  background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font: inherit; font-size: 12.5px; line-height: 1.5; }
+.sa-pending-free textarea:focus { border-color: var(--dsw-alias-brand-primary); }
+.sa-pending-actions { display: flex; align-items: center; gap: 9px; margin-top: 8px; }
+.sa-pending-hint { color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 1.4; }
+.sa-pending-error { margin-top: 7px; color: var(--dsw-alias-state-error-primary); font-size: 12px; }
+.sa-pending-answer { margin-top: 8px; }
+.sa-pending-answer-label { font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--dsw-alias-label-caption); margin-bottom: 3px; }
+.sa-pending-answer-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dsw-alias-label-primary); }
 .sa-overlay { position: absolute; inset: 0; z-index: 20; background: color-mix(in srgb, #000 28%, transparent); display: flex;
   align-items: flex-start; justify-content: center; padding-top: 9vh; }
 .sa-dialog { width: min(92%, 460px); border-radius: 14px; border: 1px solid var(--dsw-alias-border-l1);
@@ -325,6 +418,10 @@ window.__ModuleLoader__.load({
 @media (max-width: 980px) {
   .sa-rail { position: absolute; right: 0; top: 0; bottom: 0; z-index: 10; box-shadow: -12px 0 36px color-mix(in srgb, #000 16%, transparent); }
   .sa-rail-toggle { display: inline-flex; }
+}
+@media (max-width: 820px) {
+  .sa-pending-inline { padding: 8px 14px 0; }
+  .sa-pending-card { max-height: 52vh; }
 }
 `
 
@@ -360,6 +457,7 @@ window.__ModuleLoader__.load({
       if (name === 'superagent_send_message') return [text(args.worker_id), text(args.message)].filter(Boolean).join(' · ')
       if (name === 'superagent_report_progress') return text(args.summary)
       if (name === 'superagent_create_workspace' || name === 'superagent_create_conversation') return [text(args.title), text(args.path)].filter(Boolean).join(' · ')
+      if (name === 'superagent_pending_decision') return [text(args.action), text(args.question) || text(args.id)].filter(Boolean).join(' · ')
       for (const key of ['command', 'path', 'query', 'pattern', 'title', 'description']) {
         if (text(args[key])) return text(args[key])
       }
@@ -573,6 +671,30 @@ window.__ModuleLoader__.load({
     function clipText(text, limit = 160) {
       const value = String(text || '').replace(/\s+/g, ' ').trim()
       return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`
+    }
+
+    /** Whether one rail section is expanded; a missing value keeps it open. */
+    function readRailExpanded(storage, key) {
+      try { return storage.getItem(key) !== '0' } catch { return true }
+    }
+
+    /** Persist one rail section's expanded state; storage errors are harmless. */
+    function writeRailExpanded(storage, key, expanded) {
+      try { storage.setItem(key, expanded ? '1' : '0') } catch { /* private mode / closed storage */ }
+    }
+
+    /** Unanswered decisions, newest first, for the sidebar and question card. */
+    function unresolvedPending(items) {
+      return (Array.isArray(items) ? items : [])
+        .filter((item) => item && typeof item === 'object' && item.id && item.question)
+        .filter((item) => item.resolved_at === null || item.resolved_at === undefined)
+        .slice()
+        .sort((left, right) => (Number(right.created_at) || 0) - (Number(left.created_at) || 0))
+    }
+
+    /** Clear the expanded card only when its own answer has been submitted. */
+    function answeredCardAfterDismiss(currentId, answeredId) {
+      return currentId === answeredId ? '' : currentId
     }
 
     // ---------------------------------------------------------------------
@@ -927,6 +1049,100 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sa-composer-hint' }, h('span', null, 'Enter ↵'), h('span', null, 'Shift+Enter')))
     }
 
+    /** Inline question card: choices plus free text, with an answered state. */
+    function PendingQuestionCard({ t, item, answer, onAnswer, onDismiss }) {
+      const [selected, setSelected] = React.useState('')
+      const [text, setText] = React.useState('')
+      const [busy, setBusy] = React.useState(false)
+      const [error, setError] = React.useState('')
+      const answered = typeof answer === 'string' && answer.length > 0
+      const options = Array.isArray(item.options) ? item.options : []
+      const submit = async () => {
+        const value = text.trim() || selected
+        if (value.length === 0) {
+          setError(t('pendingAnswerRequired'))
+          return
+        }
+        setBusy(true)
+        setError('')
+        try {
+          await onAnswer(item, value)
+        } catch (failure) {
+          setError(failure instanceof Error ? failure.message : String(failure))
+        } finally {
+          setBusy(false)
+        }
+      }
+      return h('section', {
+        className: `sa-pending-card${answered ? ' answered' : ''}`,
+        'data-sa-pending-card': item.id,
+        'data-state': answered ? 'answered' : 'open',
+      },
+      h('div', { className: 'sa-pending-card-head' },
+        h('span', { className: 'sa-pending-card-label' }, answered ? t('pendingAnswered') : t('pending')),
+        answered && h('span', { className: 'sa-pending-card-check' }, '✓'),
+        !answered && h('button', {
+          type: 'button',
+          className: 'sa-icon-button sa-pending-card-close',
+          title: t('pendingDismiss'),
+          'aria-label': t('pendingDismiss'),
+          onClick: onDismiss,
+        }, '×')),
+      h('div', { className: 'sa-pending-question' }, item.question),
+      item.context && h('div', { className: 'sa-pending-context sa-markdown' }, renderMarkdown(t, item.context, { variant: 'compact' })),
+      answered
+        ? h('div', { className: 'sa-pending-answer' },
+          h('div', { className: 'sa-pending-answer-label' }, t('pendingAnswerLabel')),
+          h('div', { className: 'sa-pending-answer-text' }, answer))
+        : h(React.Fragment, null,
+          options.length > 0 && h('div', { className: 'sa-pending-options' },
+            options.map((option, index) => h('button', {
+              key: `option-${index}`,
+              type: 'button',
+              className: `sa-pending-option${selected === option ? ' selected' : ''}`,
+              disabled: busy,
+              onClick: () => { setSelected(option); setText(option) },
+            }, option))),
+          h('div', { className: 'sa-pending-free' },
+            h('textarea', {
+              value: text,
+              rows: 2,
+              disabled: busy,
+              placeholder: t('pendingPlaceholder'),
+              'aria-label': t('pendingAnswerLabel'),
+              onChange: (event) => { setText(event.target.value); setSelected('') },
+            })),
+          error && h('div', { className: 'sa-pending-error' }, error),
+          h('div', { className: 'sa-pending-actions' },
+            h('button', {
+              type: 'button',
+              className: 'sa-button primary',
+              disabled: busy || (text.trim().length === 0 && selected.length === 0),
+              onClick: submit,
+            }, busy ? t('pendingSubmitting') : t('pendingSubmit')),
+            h('span', { className: 'sa-pending-hint' }, t('pendingCardHint')))))
+    }
+
+    /** One pending-decision row in the rail. */
+    function PendingDecisionItem({ t, item, now, onOpen, expanded }) {
+      const optionCount = Array.isArray(item.options) ? item.options.length : 0
+      return h('button', {
+        type: 'button',
+        className: `sa-item sa-pending-item${expanded ? ' selected' : ''}`,
+        title: item.question,
+        'data-pending-id': item.id,
+        onClick: () => onOpen(item),
+      },
+      h('span', { className: 'sa-pending-mark' }, '?'),
+      h('span', { className: 'sa-item-main' },
+        h('span', { className: 'sa-item-title' }, item.question),
+        item.context && h('span', { className: 'sa-item-message' }, clipText(item.context, 120)),
+        h('span', { className: 'sa-item-meta' },
+          optionCount > 0 && h('span', null, t('pendingOptions', { count: optionCount })),
+          optionCount > 0 && h('span', null, '·'),
+          h('span', null, relativeTime(item.created_at, t, now)))))
+    }
+
     /** One history row. */
     function HistoryItem({ t, item, selected, now, onSelect, nested }) {
       const status = statusOf(item.status)
@@ -948,29 +1164,81 @@ window.__ModuleLoader__.load({
         item.lastMessage && h('span', { className: 'sa-item-message' }, item.lastMessage)))
     }
 
-    /** The conversation history rail. */
-    function HistoryRail({ t, data, selectedId, now, onSelect, onNew, onRefresh, onClose }) {
+    /** One collapsible rail section header. */
+    function RailSectionHead({ t, section, title, count, expanded, onToggle }) {
+      return h('button', {
+        type: 'button',
+        className: 'sa-rail-section-head',
+        'data-section-head': section,
+        'aria-expanded': expanded ? 'true' : 'false',
+        title: expanded
+          ? (section === 'pending' ? t('collapsePending') : t('collapseConversations'))
+          : (section === 'pending' ? t('expandPending') : t('expandConversations')),
+        onClick: () => onToggle(section),
+      },
+      h('svg', {
+        className: 'sa-rail-chevron', width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 2.1, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+      }, h('path', { d: 'M6 9l6 6 6-6' })),
+      h('span', { className: 'sa-rail-section-title' }, title),
+      h('span', { className: 'sa-rail-section-count' }, count))
+    }
+
+    /** The conversation history rail with independent conversation and pending sections. */
+    function HistoryRail({
+      t, data, selectedId, now, onSelect, onNew, onRefresh, onClose,
+      expanded = {}, onToggleSection = () => {}, pending = [], pendingExpandedId, onOpenPending,
+    }) {
       const conversations = data ? data.conversations : []
       const { groups, orphans } = groupConversations(conversations)
+      const pendingItems = unresolvedPending(pending)
+      const conversationsOpen = expanded.conversations !== false
+      const pendingOpen = expanded.pending !== false
       return h('aside', { className: 'sa-rail' },
         h('div', { className: 'sa-rail-head' },
-          h('span', { className: 'sa-rail-title' }, t('conversations')),
-          h('span', { className: 'sa-rail-count' }, conversations.length),
+          h('span', { className: 'sa-rail-title' }, t('title')),
           h('span', { style: { flex: 1 } }),
           h('button', { type: 'button', className: 'sa-icon-button', title: t('refresh'), onClick: onRefresh, 'aria-label': t('refresh') },
             h('svg', { width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.9, strokeLinecap: 'round' },
               h('path', { d: 'M20 11a8 8 0 1 0-2.3 5.7' }), h('path', { d: 'M20 4v7h-7' }))),
           h('button', { type: 'button', className: 'sa-icon-button sa-rail-toggle', title: t('close'), onClick: onClose, 'aria-label': t('close') }, '×')),
-        h('div', { className: 'sa-rail-list' },
-          conversations.length === 0 && h('div', { className: 'sa-rail-empty' }, t('emptyHistory')),
-          groups.map((group) => h('div', { className: 'sa-group', key: group.parent.id },
-            h(HistoryItem, { t, item: group.parent, selected: group.parent.id === selectedId, now, onSelect }),
-            group.workers.map((worker) => h(HistoryItem, { key: worker.id, t, item: worker, selected: worker.id === selectedId, now, onSelect, nested: true })))),
-          orphans.length > 0 && h('div', { className: 'sa-group' },
-            h('div', { className: 'sa-group-head' }, t('otherWorkers')),
-            orphans.map((worker) => h(HistoryItem, { key: worker.id, t, item: worker, selected: worker.id === selectedId, now, onSelect, nested: true }))),
-          conversations.length > 0 && h('div', { style: { padding: '10px 8px 0' } },
-            h('button', { type: 'button', className: 'sa-button', style: { width: '100%' }, onClick: onNew }, t('newConversation')))))
+        h('div', { className: 'sa-rail-sections' },
+          h('section', {
+            className: `sa-rail-section conversations${conversationsOpen ? '' : ' collapsed'}`,
+            'data-rail-section': 'conversations',
+          },
+          h(RailSectionHead, {
+            t, section: 'conversations', title: t('conversations'), count: conversations.length,
+            expanded: conversationsOpen, onToggle: onToggleSection,
+          }),
+          conversationsOpen && h('div', { className: 'sa-rail-section-list' },
+            conversations.length === 0 && h('div', { className: 'sa-rail-empty' }, t('emptyHistory')),
+            groups.map((group) => h('div', { className: 'sa-group', key: group.parent.id },
+              h(HistoryItem, { t, item: group.parent, selected: group.parent.id === selectedId, now, onSelect }),
+              group.workers.map((worker) => h(HistoryItem, { key: worker.id, t, item: worker, selected: worker.id === selectedId, now, onSelect, nested: true })))),
+            orphans.length > 0 && h('div', { className: 'sa-group' },
+              h('div', { className: 'sa-group-head' }, t('otherWorkers')),
+              orphans.map((worker) => h(HistoryItem, { key: worker.id, t, item: worker, selected: worker.id === selectedId, now, onSelect, nested: true }))),
+            h('div', { style: { padding: '10px 8px 0' } },
+              h('button', { type: 'button', className: 'sa-button', style: { width: '100%' }, onClick: onNew }, t('newConversation'))))),
+          h('section', {
+            className: `sa-rail-section pending${pendingOpen ? ' expanded' : ' collapsed'}`,
+            'data-rail-section': 'pending',
+          },
+          h(RailSectionHead, {
+            t, section: 'pending', title: t('pending'), count: pendingItems.length,
+            expanded: pendingOpen, onToggle: onToggleSection,
+          }),
+          pendingOpen && h('div', { className: 'sa-rail-section-list' },
+            pendingItems.length === 0 && h('div', { className: 'sa-rail-empty' }, t('pendingEmpty')),
+            pendingItems.map((item) => h(PendingDecisionItem, {
+              key: item.id,
+              t,
+              item,
+              now,
+              expanded: item.id === pendingExpandedId,
+              onOpen: onOpenPending,
+            }))))))
     }
 
     /** The new-conversation dialog. */
@@ -1027,12 +1295,19 @@ window.__ModuleLoader__.load({
         try { return window.localStorage.getItem(SELECTED_KEY) || '' } catch { return '' }
       })
       const [railOpen, setRailOpen] = React.useState(() => {
-        try { return window.localStorage.getItem('dsh-super-agent:rail') !== '0' } catch { return true }
+        try { return window.localStorage.getItem(RAIL_VISIBLE_KEY) !== '0' } catch { return true }
       })
+      const [railSections, setRailSections] = React.useState(() => ({
+        conversations: readRailExpanded(window.localStorage, RAIL_SECTION_KEYS.conversations),
+        pending: readRailExpanded(window.localStorage, RAIL_SECTION_KEYS.pending),
+      }))
+      const [expandedPendingId, setExpandedPendingId] = React.useState('')
+      const [answeredPending, setAnsweredPending] = React.useState({})
       const [newOpen, setNewOpen] = React.useState(false)
       const [notice, setNotice] = React.useState('')
       const data = catalog.data
       const conversations = data ? data.conversations : []
+      const pending = data && Array.isArray(data.pending) ? data.pending : []
       const selected = conversations.find((item) => item.id === selectedId) || null
       const chat = useSessionChat(ctx, selected ? selected.sessionId : undefined)
       const statusLabel = statusOf(selected ? selected.status : 'idle')
@@ -1063,10 +1338,41 @@ window.__ModuleLoader__.load({
       }
       const toggleRail = () => {
         setRailOpen((value) => {
-          try { window.localStorage.setItem('dsh-super-agent:rail', value ? '0' : '1') } catch { /* ignore */ }
+          try { window.localStorage.setItem(RAIL_VISIBLE_KEY, value ? '0' : '1') } catch { /* ignore */ }
           return !value
         })
       }
+      const toggleRailSection = (section) => {
+        if (section !== 'conversations' && section !== 'pending') return
+        setRailSections((value) => {
+          const next = { ...value, [section]: !value[section] }
+          writeRailExpanded(window.localStorage, RAIL_SECTION_KEYS[section], next[section])
+          return next
+        })
+      }
+      const openPending = (item) => {
+        if (!item) return
+        const owner = conversations.find((conversation) => conversation.id === item.conversation_id)
+        if (owner) select(owner)
+        setExpandedPendingId(item.id)
+      }
+      const answerPending = async (item, answer) => {
+        const response = await api(`/pending/${encodeURIComponent(item.id)}/resolve`, {
+          method: 'POST',
+          body: { answer },
+        })
+        const resolved = response.item || { ...item, answer, resolved_at: Date.now() }
+        setAnsweredPending((value) => ({ ...value, [item.id]: { item: resolved, answer } }))
+        await catalog.reload()
+        // Show the answered state briefly, then collapse the inline card even
+        // if the user never touches the X. Only clear this item if the user has
+        // not opened another pending card in the meantime.
+        setTimeout(() => {
+          setExpandedPendingId((current) => answeredCardAfterDismiss(current, item.id))
+        }, PENDING_ANSWER_DISMISS_MS)
+        return resolved
+      }
+      const dismissPending = () => setExpandedPendingId('')
       const openInDsh = async (id) => {
         try {
           const list = ctx.sessions.list.getSnapshot()
@@ -1113,6 +1419,22 @@ window.__ModuleLoader__.load({
               h('div', { className: 'sa-stock-surface' }, renderSlot('superagent.conversation', { sessionId: selected.sessionId, fallback: customCenter }, { fallback: customCenter })))))
         : customCenter
 
+      const pendingCardItem = expandedPendingId
+        ? (pending.find((item) => item.id === expandedPendingId) || (answeredPending[expandedPendingId] && answeredPending[expandedPendingId].item))
+        : undefined
+      const pendingCardAnswer = expandedPendingId && answeredPending[expandedPendingId]
+        ? answeredPending[expandedPendingId].answer
+        : ''
+      const pendingCard = pendingCardItem && selected && pendingCardItem.conversation_id === selected.id
+        ? h(PendingQuestionCard, {
+          t,
+          item: pendingCardItem,
+          answer: pendingCardAnswer,
+          onAnswer: answerPending,
+          onDismiss: dismissPending,
+        })
+        : null
+
       return h('div', { className: 'sa-root' },
         h('style', null, CSS),
         h(Header, {
@@ -1128,6 +1450,7 @@ window.__ModuleLoader__.load({
         notice && h('div', { className: 'sa-error', style: { padding: '8px 18px 0' } }, notice),
         h('div', { className: 'sa-body' },
           h('main', { className: 'sa-main' },
+            pendingCard && h('div', { className: 'sa-pending-inline' }, pendingCard),
             catalog.status === 'loading' && !data
               ? h('div', { className: 'sa-empty' }, h('p', null, t('loading')))
               : catalog.status === 'error' && !data
@@ -1139,6 +1462,11 @@ window.__ModuleLoader__.load({
             data,
             selectedId,
             now,
+            pending,
+            pendingExpandedId: expandedPendingId,
+            onOpenPending: openPending,
+            expanded: railSections,
+            onToggleSection: toggleRailSection,
             onSelect: select,
             onNew: () => setNewOpen(true),
             onRefresh: () => { catalog.reload().catch(() => {}) },
@@ -1204,7 +1532,17 @@ window.__ModuleLoader__.load({
         selectConversationSurface,
         workerActivity,
         clipText,
+        unresolvedPending,
+        answeredCardAfterDismiss,
+        readRailExpanded,
+        writeRailExpanded,
+        HistoryRail,
+        PendingDecisionItem,
+        PendingQuestionCard,
         EmbeddedConversation,
+        RAIL_VISIBLE_KEY,
+        RAIL_SECTION_KEYS,
+        PENDING_ANSWER_DISMISS_MS,
         SURFACE_STOCK,
         SURFACE_CUSTOM,
         STOCK_CHAT_KEY,

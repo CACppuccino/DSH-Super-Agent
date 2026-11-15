@@ -52,6 +52,7 @@ test('bootstrap creates a Super Agent conversation, workspace, prompt, and tools
     'superagent_dispatch_task',
     'superagent_list_conversations',
     'superagent_list_workers',
+    'superagent_pending_decision',
     'superagent_send_message',
     'superagent_stop_worker',
     'superagent_worker_output',
@@ -220,7 +221,88 @@ test('the Super Agent prompt delegates host work and asks in plain text', async 
   assert.match(SUPER_PROMPT, /dispatch a worker/)
   assert.match(SUPER_PROMPT, /do not have an ask_user_question tool/)
   assert.match(SUPER_PROMPT, /write the question and any options as text/)
+  assert.match(SUPER_PROMPT, /superagent_pending_decision/)
   assert.match(WORKER_PROMPT, /do not use ask_user_question/)
+})
+
+test('the pending decision tool creates, lists, and resolves items scoped to its conversation', async () => {
+  const { orchestrator, host, store, superAgent, superConversation, stateDir } = await bootstrapped()
+  const pending = superAgent.tools.get('superagent_pending_decision')
+  assert.ok(pending, 'the pending decision tool is registered')
+  assert.deepEqual(pending.parameters.properties.action.enum, ['create', 'list', 'resolve'])
+
+  const created = await pending.execute({
+    action: 'create',
+    question: 'Which channel?',
+    context: 'Both are ready.',
+    options: ['stable', 'beta'],
+  }, { agent: superAgent })
+  assert.equal(created.ok, true)
+  assert.equal(created.item.conversation_id, superConversation.id)
+  assert.deepEqual(created.item.options, ['stable', 'beta'])
+  assert.equal((await readFile(join(stateDir, 'pending.json'), 'utf8')).includes('Which channel?'), true)
+
+  const listed = await pending.execute({ action: 'list' }, { agent: superAgent })
+  assert.deepEqual(listed.items.map((item) => item.id), [created.item.id])
+
+  const second = await orchestrator.createConversation({ title: 'Second' })
+  const secondAgent = await orchestrator.ensureAgent(store.conversation(second.id))
+  const secondTool = secondAgent.tools.get('superagent_pending_decision')
+  assert.deepEqual((await secondTool.execute({ action: 'list' }, { agent: secondAgent })).items, [])
+  await assert.rejects(
+    () => secondTool.execute({ action: 'resolve', id: created.item.id, answer: 'beta' }, { agent: secondAgent }),
+    /Unknown pending decision/,
+  )
+
+  const resolved = await pending.execute({ action: 'resolve', id: created.item.id, answer: 'beta' }, { agent: superAgent })
+  assert.equal(resolved.item.answer, 'beta')
+  assert.equal(typeof resolved.item.resolved_at, 'number')
+  assert.deepEqual((await pending.execute({ action: 'list' }, { agent: superAgent })).items, [])
+  const withHistory = await pending.execute({ action: 'list', include_resolved: true }, { agent: superAgent })
+  assert.equal(withHistory.items.length, 1)
+  assert.equal(withHistory.items[0].answer, 'beta')
+  await assert.rejects(
+    () => pending.execute({ action: 'create', question: '   ' }, { agent: superAgent }),
+    /question is required/,
+  )
+  await assert.rejects(
+    () => pending.execute({ action: 'explode' }, { agent: superAgent }),
+    /action must be create, list, or resolve/,
+  )
+
+  // The queue is durable across a process-style reload.
+  const reloaded = new Orchestrator({ ctx: host, store: new StateStore(join(stateDir, 'state.json')), stateDir })
+  await reloaded.load()
+  assert.equal(reloaded.listPendingDecisions({ includeResolved: true }).length, 1)
+  assert.equal(reloaded.listPendingDecisions().length, 0)
+})
+
+test('answering a pending decision delivers a plain user message to the Super Agent', async () => {
+  const { orchestrator, host, superConversation, superAgent } = await bootstrapped()
+  const item = await orchestrator.createPendingDecision({
+    question: 'Ship the release?',
+    context: 'All checks passed.',
+    options: ['Yes', 'No'],
+  })
+  assert.equal(item.conversation_id, superConversation.id)
+  superAgent.inbox.length = 0
+
+  const outcome = await orchestrator.answerPendingDecision({ id: item.id, answer: 'Yes' })
+  assert.equal(outcome.delivered, true)
+  assert.equal(outcome.item.answer, 'Yes')
+  assert.equal(superAgent.inbox.length, 1)
+  const message = superAgent.inbox[0]
+  assert.equal(message.role, 'user')
+  assert.deepEqual(message.source, { kind: 'user' })
+  assert.match(message.content[0].text, /Ship the release\?/)
+  assert.match(message.content[0].text, /The user answered: Yes/)
+  assert.equal(host.get(superConversation.id).inbox.length, 1)
+
+  const retry = await orchestrator.answerPendingDecision({ id: item.id, answer: 'No' })
+  assert.equal(retry.delivered, false)
+  assert.equal(retry.item.answer, 'Yes')
+  assert.equal(superAgent.inbox.length, 1)
+  assert.equal(orchestrator.listPendingDecisions().length, 0)
 })
 
 test('dispatch creates a worker in a requested workspace and sends a self-contained brief', async () => {

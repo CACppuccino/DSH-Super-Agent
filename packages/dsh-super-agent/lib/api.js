@@ -58,6 +58,30 @@ export function createApi({ orchestrator, origin }) {
       if (upper === 'GET' && parts.length === 1 && parts[0] === 'state') {
         return result(200, orchestrator.state())
       }
+      if (upper === 'GET' && parts.length === 1 && parts[0] === 'pending') {
+        const conversationId = typeof query.conversationId === 'string' ? query.conversationId : undefined
+        const includeResolved = query.includeResolved === '1' || query.includeResolved === 'true'
+        return result(200, {
+          pending: orchestrator.listPendingDecisions({ conversationId, includeResolved }),
+        })
+      }
+      if (upper === 'POST' && parts.length === 1 && parts[0] === 'pending') {
+        const input = objectBody(body)
+        const item = await orchestrator.createPendingDecision({
+          conversationId: typeof input.conversationId === 'string' ? input.conversationId : undefined,
+          question: input.question,
+          context: typeof input.context === 'string' ? input.context : undefined,
+          options: Array.isArray(input.options) ? input.options : undefined,
+        })
+        return result(200, { item })
+      }
+      if (upper === 'POST' && parts.length === 3 && parts[0] === 'pending' && parts[2] === 'resolve') {
+        const input = objectBody(body)
+        return result(200, await orchestrator.answerPendingDecision({
+          id: decodeURIComponent(parts[1]),
+          answer: input.answer,
+        }))
+      }
       if (upper === 'POST' && parts.length === 1 && parts[0] === 'conversations') {
         const input = objectBody(body)
         const conversation = await orchestrator.createConversation({

@@ -259,3 +259,120 @@ test('the embedded conversation calls the stock content factory with the embedde
   assert.equal(typeof calls[0][2].slots.views, 'function')
   assert.equal(calls[0][2].fallback, 'fallback')
 })
+
+test('pending helpers keep only unanswered decisions and persist section collapse state', async () => {
+  const plugin = await loadPlugin()
+  const { unresolvedPending, answeredCardAfterDismiss, readRailExpanded, writeRailExpanded, RAIL_SECTION_KEYS, RAIL_VISIBLE_KEY, PENDING_ANSWER_DISMISS_MS } = plugin.__internals
+  const pending = [
+    { id: 'old', question: 'Old?', created_at: 10, resolved_at: null },
+    { id: 'done', question: 'Done?', created_at: 20, resolved_at: 30, answer: 'yes' },
+    { id: 'new', question: 'New?', created_at: 40, resolved_at: undefined },
+    { id: '', question: 'No id', created_at: 50 },
+  ]
+  assert.deepEqual(unresolvedPending(pending).map((item) => item.id), ['new', 'old'])
+  assert.equal(unresolvedPending(undefined).length, 0)
+  assert.equal(answeredCardAfterDismiss('item-a', 'item-a'), '')
+  assert.equal(answeredCardAfterDismiss('item-b', 'item-a'), 'item-b')
+  assert.equal(answeredCardAfterDismiss('', 'item-a'), '')
+  assert.ok(PENDING_ANSWER_DISMISS_MS >= 500 && PENDING_ANSWER_DISMISS_MS <= 5000)
+
+  assert.equal(RAIL_SECTION_KEYS.conversations, 'dsh-super-agent:rail:conversations')
+  assert.equal(RAIL_SECTION_KEYS.pending, 'dsh-super-agent:rail:pending')
+  assert.notEqual(RAIL_SECTION_KEYS.conversations, RAIL_SECTION_KEYS.pending)
+  assert.equal(RAIL_VISIBLE_KEY, 'dsh-super-agent:rail')
+
+  const values = new Map()
+  const storage = { getItem: (key) => values.has(key) ? values.get(key) : null, setItem: (key, value) => values.set(key, value) }
+  assert.equal(readRailExpanded(storage, RAIL_SECTION_KEYS.conversations), true)
+  assert.equal(readRailExpanded(storage, RAIL_SECTION_KEYS.pending), true)
+  writeRailExpanded(storage, RAIL_SECTION_KEYS.pending, false)
+  assert.equal(values.get(RAIL_SECTION_KEYS.pending), '0')
+  assert.equal(readRailExpanded(storage, RAIL_SECTION_KEYS.pending), false)
+  assert.equal(readRailExpanded(storage, RAIL_SECTION_KEYS.conversations), true)
+  writeRailExpanded(storage, RAIL_SECTION_KEYS.pending, true)
+  assert.equal(readRailExpanded(storage, RAIL_SECTION_KEYS.pending), true)
+
+  const broken = { getItem() { throw new Error('closed') }, setItem() { throw new Error('closed') } }
+  assert.equal(readRailExpanded(broken, RAIL_SECTION_KEYS.pending), true)
+  assert.doesNotThrow(() => writeRailExpanded(broken, RAIL_SECTION_KEYS.pending, false))
+})
+
+test('the rail renders conversations above the pending section and collapses them independently', async () => {
+  const plugin = await loadPlugin()
+  const { HistoryRail } = plugin.__internals
+  const t = (key, values) => values && values.count !== undefined ? `${key}:${values.count}` : key
+  const data = { conversations: [{ id: 's1', kind: 'super', title: 'Super Agent', workspacePath: '/tmp/x', status: 'idle', updatedAt: 1 }] }
+  const pending = [
+    { id: 'p1', conversation_id: 's1', question: 'Choose?', context: 'Context', options: ['A', 'B'], created_at: 2, resolved_at: null },
+    { id: 'p2', conversation_id: 's1', question: 'Answered?', created_at: 3, resolved_at: 4, answer: 'yes' },
+  ]
+  const base = {
+    t, data, selectedId: 's1', now: 10, onSelect: () => {}, onNew: () => {}, onRefresh: () => {}, onClose: () => {},
+    pending, pendingExpandedId: '', onOpenPending: () => {},
+  }
+  const tree = HistoryRail({ ...base, expanded: {} })
+  const sections = tree.children[1].children
+  assert.deepEqual(sections.map((section) => section.props['data-rail-section']), ['conversations', 'pending'])
+  assert.equal(sections[0].props.className.includes('conversations'), true)
+  assert.equal(sections[1].props.className.includes('pending'), true)
+  const pendingSection = sections[1]
+  assert.equal(pendingSection.props.className.includes('expanded'), true)
+  const pendingHead = pendingSection.children[0]
+  assert.equal(pendingHead.props.section, 'pending')
+  assert.equal(pendingHead.props.expanded, true)
+  assert.equal(pendingHead.props.count, 1, 'answered items are removed from the pending count')
+  const pendingRows = pendingSection.children[1].children[1]
+  assert.equal(pendingRows.length, 1)
+  assert.equal(pendingRows[0].props.item.id, 'p1')
+  assert.equal(pendingRows[0].props.item.question, 'Choose?')
+  assert.equal(pendingRows[0].props.item.resolved_at, null)
+  const text = JSON.stringify(pendingSection)
+  assert.equal(text.includes('Answered?'), false, 'answered items disappear from the rail')
+
+  const collapsedConversations = HistoryRail({ ...base, expanded: { conversations: false } })
+  const both = collapsedConversations.children[1].children
+  assert.equal(both[0].props.className.includes('collapsed'), true)
+  assert.equal(both[0].children.some((child) => child && child.props && child.props.className === 'sa-rail-section-list'), false,
+    'only the section header remains when collapsed')
+  assert.equal(both[1].props.className.includes('expanded'), true, 'pending stays independent')
+  assert.equal(both[0].children[0].props.section, 'conversations', 'the section header stays visible')
+  assert.equal(both[0].children[0].props.expanded, false)
+  assert.equal(JSON.stringify(both[0]).includes('"sa-rail-section-list"'), false)
+
+  const collapsedPending = HistoryRail({ ...base, expanded: { pending: false } })
+  const pendingCollapsed = collapsedPending.children[1].children
+  assert.equal(pendingCollapsed[1].props.className.includes('collapsed'), true)
+  assert.equal(pendingCollapsed[1].children.some((child) => child && child.props && child.props.className === 'sa-rail-section-list'), false)
+  assert.equal(JSON.stringify(pendingCollapsed[1]).includes('Choose?'), false)
+})
+
+test('the inline pending card renders options, free text, and an answered state', async () => {
+  const plugin = await loadPlugin()
+  const { PendingQuestionCard, toolDetail } = plugin.__internals
+  const t = (key, values) => values && values.count !== undefined ? `${key}:${values.count}` : key
+  const item = { id: 'p1', question: 'Which channel?', context: 'Both builds exist.', options: ['stable', 'beta'] }
+
+  const open = PendingQuestionCard({ t, item, answer: '', onAnswer: async () => {}, onDismiss: () => {} })
+  assert.equal(open.props['data-sa-pending-card'], 'p1')
+  assert.equal(open.props['data-state'], 'open')
+  const openText = JSON.stringify(open)
+  assert.match(openText, /Which channel\?/)
+  assert.match(openText, /Both builds exist\./)
+  assert.match(openText, /stable/)
+  assert.match(openText, /beta/)
+  assert.match(openText, /textarea/)
+  assert.match(openText, /pendingSubmit/)
+  assert.match(openText, /pendingDismiss/)
+
+  const answered = PendingQuestionCard({ t, item, answer: 'beta', onAnswer: async () => {}, onDismiss: () => {} })
+  assert.equal(answered.props['data-state'], 'answered')
+  const answeredText = JSON.stringify(answered)
+  assert.match(answeredText, /pendingAnswered/)
+  assert.match(answeredText, /beta/)
+  assert.equal(answeredText.includes('textarea'), false)
+  assert.equal(answeredText.includes('sa-pending-options'), false)
+  assert.equal(answeredText.includes('pendingDismiss'), false, 'the X is only for unanswered cards')
+
+  assert.equal(toolDetail('superagent_pending_decision', { action: 'create', question: 'Which channel?' }), 'create · Which channel?')
+  assert.equal(toolDetail('superagent_pending_decision', { action: 'resolve', id: 'p1' }), 'resolve · p1')
+})
