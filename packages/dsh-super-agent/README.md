@@ -55,7 +55,7 @@ Every dispatch is classified into a **theme** (for example `quant-research`, `ds
 - an unknown theme, or a theme without a workspace, refuses to create a directory unless `new_workspace` or `justification` is supplied; the new workspace is then registered under the theme;
 - every dispatch result surfaces `theme`, `workspace_created`, and `workspace_reused`, so the Super Agent can tell the user, and no workspace is created silently.
 
-`superagent_workspaces` is the discovery surface: `list` inventories every SA workspace (worker counts, live/idle/stopped breakdown, last activity, directory emptiness, proposed theme groups), `themes` lists the persisted registry, `assign` maps a theme to an existing workspace, and `suggest` classifies a task description into the best theme + workspace. Proposed groups are **hints only**; retiring or merging workspaces is a separate, dry-run consolidation step for the user to approve, and existing worker conversations are never moved.
+`superagent_workspaces` is the discovery surface: `list` inventories every SA workspace (worker counts, live/idle/stopped breakdown, last activity, directory emptiness, proposed theme groups), `themes` lists the persisted registry, `assign` maps a theme to an existing workspace, and `suggest` classifies a task description into the best theme + workspace. If `suggest` returns a proposed workspace for a known but unassigned theme, dispatch with that workspace id (or assign it first) instead of creating a new directory. Proposed groups are **hints only**; retiring or merging workspaces is a separate, dry-run consolidation step for the user to approve, and existing worker conversations are never moved.
 
 ## Model tools
 
