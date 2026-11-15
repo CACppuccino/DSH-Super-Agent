@@ -38,7 +38,16 @@ const PACKAGE = require('../package.json')
 /** Stable Cordis plugin name used by Loader diagnostics. */
 export const name = 'dsh-remote'
 
-/** Host services the compatibility layer drives directly. */
+/**
+ * Host services the compatibility layer drives directly.
+ *
+ * Cordis reads this object as a service map, so EVERY key is a required
+ * dependency: `{ required: false }` is an intercept config, not an optional
+ * marker, and a missing key that appears here leaves the plugin pending
+ * forever. The desktop account service is therefore absent from this map and
+ * resolved on demand in `compat.js` (`ctx.get('deepseekAccount')`), which
+ * keeps the endpoint mountable on a host that exposes no account service.
+ */
 export const inject = {
   sessionController: { required: true },
   workspaceRegistry: { required: true },
@@ -47,9 +56,6 @@ export const inject = {
   agentDefaultModel: { required: true },
   agents: { required: true },
   workingDirectory: { required: true },
-  // Optional: older/alternative profiles may not mount the desktop account
-  // service, and the remote endpoint must still load without it.
-  accountController: { required: false },
 }
 
 const DEFAULTS = Object.freeze({

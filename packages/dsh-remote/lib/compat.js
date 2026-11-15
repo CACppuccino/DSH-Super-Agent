@@ -256,6 +256,35 @@ export function createCompat(ctx, { logger = console, version = '0.0.0' } = {}) 
   ping.unref?.()
 
   // ── Unary RPC compatibility ────────────────────────────────────────────
+  /**
+   * Resolve the optional desktop account service without declaring it as a
+   * dependency. Cordis settles every injected key before `apply` runs, so a
+   * missing injected service leaves the plugin pending forever; the account
+   * service is therefore looked up on demand instead.
+   *
+   * DSH 0.2.2-rc.3 replaced `@deepseek-ai/dsh-api-account-controller` with
+   * `@deepseek-ai/dsh-deepseek-account` and renamed the Host service to
+   * `deepseekAccount` (Remote namespace `account`). Its `getBalance(client)`
+   * keeps the `{ version, locale, timezoneOffsetSeconds }` input and returns
+   * `null`, `{ status: 'failed' }`, or
+   * `{ status: 'ready', value, bonusWallets }`. The retired name remains a
+   * best-effort fallback for older Hosts.
+   */
+  const accountService = () => {
+    if (typeof ctx.get !== 'function') return undefined
+    try {
+      // `ctx.get` reports an absent service as undefined instead of throwing,
+      // and works without an injection requirement on this plugin.
+      return ctx.get('deepseekAccount') ?? ctx.get('accountController') ?? undefined
+    } catch {
+      // A throwing lookup must not take the endpoint down.
+      return undefined
+    }
+  }
+
+  /** An empty account payload for one state; `unavailable` means no service. */
+  const balanceState = (status) => ({ status, wallets: [], bonusWallets: [], fetchedAt: now() })
+
   const handlers = {
     'host.describe': async () => {
       const selection = ctx.agentDefaultModel.currentSelection()
@@ -269,10 +298,11 @@ export function createCompat(ctx, { logger = console, version = '0.0.0' } = {}) 
     },
 
     'host.balance': async (payload) => {
-      const account = ctx.accountController
-      if (!account) {
-        throw new CompatError('gateway/not-found', 'the host does not expose an account service')
-      }
+      const account = accountService()
+      // The account service is optional: a Host without the desktop account
+      // still mounts the endpoint and serves every other RPC, so report
+      // `unavailable` instead of turning the call into a wire error.
+      if (typeof account?.getBalance !== 'function') return balanceState('unavailable')
       const input = objectOf(payload)
       const locale = typeof input.locale === 'string' && input.locale.length > 0 ? input.locale : 'en'
       const timezoneOffsetSeconds = Number.isFinite(input.timezoneOffsetSeconds)
@@ -280,25 +310,22 @@ export function createCompat(ctx, { logger = console, version = '0.0.0' } = {}) 
         : 0
       try {
         // Server-side only: the Platform grant never leaves the host. The
-        // controller returns recharge and bonus wallets as decimal strings.
+        // service returns recharge and bonus wallets as decimal strings and
+        // reports `null` while signed out.
         const balance = await account.getBalance({ version, locale, timezoneOffsetSeconds })
-        if (balance === null) {
-          return { status: 'signed-out', wallets: [], bonusWallets: [], fetchedAt: now() }
-        }
-        if (balance.status === 'failed') {
-          return { status: 'failed', wallets: [], bonusWallets: [], fetchedAt: now() }
-        }
+        if (balance === null) return balanceState('signed-out')
+        if (balance?.status !== 'ready' || !Array.isArray(balance.value)) return balanceState('failed')
         return {
           status: 'ready',
           wallets: balance.value,
-          bonusWallets: balance.bonusWallets,
+          bonusWallets: Array.isArray(balance.bonusWallets) ? balance.bonusWallets : [],
           fetchedAt: now(),
         }
       } catch (error) {
-        throw new CompatError(
-          'account/balance-failed',
-          error instanceof Error ? error.message : String(error),
-        )
+        // A failing Platform read is a balance failure, not a broken plugin:
+        // answer `failed` so the endpoint and every other RPC keep working.
+        logger.warn?.(`dsh-remote: account balance read failed: ${error instanceof Error ? error.message : String(error)}`)
+        return balanceState('failed')
       }
     },
 

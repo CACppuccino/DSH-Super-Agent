@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply, readOrCreateTokenFile, resolveConfig, resolveTokens } from '../lib/index.js'
+import { apply, inject, readOrCreateTokenFile, resolveConfig, resolveTokens } from '../lib/index.js'
 import { createCompat, historyPage, sseEnvelope, workspaceView } from '../lib/compat.js'
 
 const TOKEN = 'test-token-0123456789abcdef'
@@ -257,19 +257,33 @@ test('compat falls back to events() for backwards history pages', async () => {
   }
 })
 
-test('compat exposes the host account balance read-only', async () => {
+test('the inject map never waits for the desktop account service', () => {
+  // Every key in `inject` is a required dependency, even with
+  // `{ required: false }`; the retired `accountController` key is what left
+  // dsh-remote pending on DSH 0.2.2-rc.3. The account service must stay out of
+  // this map and be resolved on demand instead.
+  assert.equal('accountController' in inject, false)
+  assert.equal('deepseekAccount' in inject, false)
+})
+
+test('compat exposes the host account balance through the rc.3 service', async () => {
   const ctx = fakeContext()
   const calls = []
+  const lookups = []
   let outcome = {
     status: 'ready',
     value: [{ currency: 'CNY', balance: '123.45' }, { currency: 'USD', balance: '6.78' }],
     bonusWallets: [{ currency: 'CNY', balance: '10.00' }],
   }
-  ctx.accountController = {
+  const account = {
     async getBalance(client) {
       calls.push(client)
       return outcome
     },
+  }
+  ctx.get = (name) => {
+    lookups.push(name)
+    return name === 'deepseekAccount' ? account : undefined
   }
   const compat = createCompat(ctx, { version: 'test' })
   const signal = new AbortController().signal
@@ -285,6 +299,8 @@ test('compat exposes the host account balance read-only', async () => {
     assert.deepEqual(balance.bonusWallets, [{ currency: 'CNY', balance: '10.00' }])
     assert.deepEqual(calls, [{ version: 'test', locale: 'zh-Hans-CN', timezoneOffsetSeconds: 28800 }])
     assert.equal(typeof balance.fetchedAt, 'number')
+    // The rc.3 service name is asked first; the retired name is a fallback.
+    assert.deepEqual(lookups.slice(0, 2), ['deepseekAccount'])
 
     outcome = null
     const signedOut = await compat.rpc('host.balance', {}, signal)
@@ -295,6 +311,71 @@ test('compat exposes the host account balance read-only', async () => {
     outcome = { status: 'failed' }
     const failed = await compat.rpc('host.balance', {}, signal)
     assert.equal(failed.status, 'failed')
+
+    // An older 0.2.1 Host still reaches its service through the same
+    // on-demand lookup, which keeps the endpoint loadable without an
+    // injected dependency.
+    outcome = { status: 'ready', value: [{ currency: 'CNY', balance: '1.00' }], bonusWallets: [] }
+    ctx.get = (name) => name === 'accountController' ? account : undefined
+    const legacy = await compat.rpc('host.balance', {}, signal)
+    assert.equal(legacy.status, 'ready')
+    assert.deepEqual(legacy.wallets, [{ currency: 'CNY', balance: '1.00' }])
+  } finally {
+    compat.dispose()
+  }
+})
+
+test('host.balance reports unavailable when no account service exists', async () => {
+  // A host with no account service must still mount and answer every other
+  // RPC: the account is an optional dependency, not an injected one.
+  const ctx = fakeContext()
+  const compat = createCompat(ctx, { version: 'test' })
+  const signal = new AbortController().signal
+  try {
+    const balance = await compat.rpc('host.balance', {}, signal)
+    assert.equal(balance.status, 'unavailable')
+    assert.deepEqual(balance.wallets, [])
+    assert.deepEqual(balance.bonusWallets, [])
+    assert.equal(typeof balance.fetchedAt, 'number')
+    // Other features keep working on the same compatibility layer.
+    const described = await compat.rpc('host.describe', {}, signal)
+    assert.equal(described.version, 'test')
+    // A throwing lookup degrades exactly like a missing service.
+    ctx.get = () => { throw new Error('lookup failed') }
+    assert.equal((await compat.rpc('host.balance', {}, signal)).status, 'unavailable')
+  } finally {
+    compat.dispose()
+  }
+})
+
+test('a throwing getBalance reports failed without breaking other RPCs', async () => {
+  const ctx = fakeContext()
+  const warnings = []
+  let calls = 0
+  ctx.get = (name) => name === 'deepseekAccount'
+    ? {
+        async getBalance() {
+          calls += 1
+          throw new Error('platform is down')
+        },
+      }
+    : undefined
+  const compat = createCompat(ctx, {
+    version: 'test',
+    logger: { info() {}, warn: (message) => warnings.push(String(message)) },
+  })
+  const signal = new AbortController().signal
+  try {
+    const balance = await compat.rpc('host.balance', {}, signal)
+    assert.equal(balance.status, 'failed')
+    assert.deepEqual(balance.wallets, [])
+    assert.equal(calls, 1)
+    assert.match(warnings.at(-1), /account balance read failed: platform is down/)
+    // The plugin is still serving: a later RPC resolves normally.
+    const described = await compat.rpc('host.describe', {}, signal)
+    assert.equal(described.version, 'test')
+    // The next balance read also degrades instead of throwing.
+    assert.equal((await compat.rpc('host.balance', {}, signal)).status, 'failed')
   } finally {
     compat.dispose()
   }
@@ -357,6 +438,18 @@ test('the HTTP endpoint keeps bearer auth and serves RPC plus SSE', async (t) =>
   const envelope = await listed.json()
   assert.equal(envelope.type, 'server-response')
   assert.equal(envelope.result.value.items[0].sessionId, 's1')
+
+  // The same mounted endpoint answers the balance RPC when the Host exposes
+  // no account service: `unavailable`, not an RPC error.
+  const balance = await fetch(`${base}/remote-api/host.balance`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+    body: JSON.stringify({ type: 'client-request', rpcId: 'r2', method: 'host.balance', payload: {} }),
+  })
+  assert.equal(balance.status, 200)
+  const balanceEnvelope = await balance.json()
+  assert.equal(balanceEnvelope.result.ok, true)
+  assert.equal(balanceEnvelope.result.value.status, 'unavailable')
 
   const controller = new AbortController()
   const sse = await fetch(`${base}/remote-api/events.mux`, {
