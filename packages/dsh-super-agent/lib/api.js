@@ -108,7 +108,9 @@ export function createApi({ orchestrator, origin, billing }) {
         const input = objectBody(body)
         const theme = await orchestrator.assignTheme({
           theme: input.theme,
-          workspaceId: typeof input.workspaceId === 'string' ? input.workspaceId : undefined,
+          workspaceId: typeof input.workspaceId === 'string'
+            ? input.workspaceId
+            : (typeof input.workspace_id === 'string' ? input.workspace_id : undefined),
           title: typeof input.title === 'string' ? input.title : undefined,
           description: typeof input.description === 'string' ? input.description : undefined,
         })
@@ -128,7 +130,9 @@ export function createApi({ orchestrator, origin, billing }) {
         const input = objectBody(body)
         const conversation = await orchestrator.createConversation({
           title: typeof input.title === 'string' ? input.title : undefined,
-          workspaceId: typeof input.workspaceId === 'string' ? input.workspaceId : undefined,
+          workspaceId: typeof input.workspaceId === 'string'
+            ? input.workspaceId
+            : (typeof input.workspace_id === 'string' ? input.workspace_id : undefined),
           path: typeof input.path === 'string' ? input.path : undefined,
           newWorkspace: input.newWorkspace === true,
         })

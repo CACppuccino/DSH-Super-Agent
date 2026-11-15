@@ -365,7 +365,7 @@ const DISPATCH_SCHEMA = {
     },
     justification: { type: 'string', description: 'Why a new workspace is genuinely needed when the theme is unknown or has no registered workspace. Never create silently.' },
   },
-  required: ['title', 'prompt'],
+  required: ['title', 'prompt', 'theme'],
 }
 
 const CREATE_WORKSPACE_SCHEMA = {
