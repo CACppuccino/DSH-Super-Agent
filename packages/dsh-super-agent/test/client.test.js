@@ -429,7 +429,7 @@ test('pending helpers keep only unanswered decisions and persist section collaps
 
 test('the rail renders conversations above the pending section and collapses them independently', async () => {
   const plugin = await loadPlugin()
-  const { HistoryRail } = plugin.__internals
+  const { HistoryRail, workerTagIndex } = plugin.__internals
   const t = (key, values) => values && values.count !== undefined ? `${key}:${values.count}` : key
   const data = { conversations: [{ id: 's1', kind: 'super', title: 'Super Agent', workspacePath: '/tmp/x', status: 'idle', updatedAt: 1 }] }
   const pending = [
@@ -589,4 +589,321 @@ test('a disabled Platform endpoint falls back to the token chip and explains why
   assert.match(text, /platformDisabled/)
   assert.match(text, /rollingLabel/)
   assert.match(text, /differentWindows/)
+})
+
+test('worker counts separate total from in-progress (dispatching/running) workers', async () => {
+  const plugin = await loadPlugin()
+  const { workerStats, isWorkerRunning } = plugin.__internals
+  assert.equal(isWorkerRunning('running'), true)
+  assert.equal(isWorkerRunning('dispatching'), true)
+  assert.equal(isWorkerRunning('waiting'), false)
+  assert.equal(isWorkerRunning('needs_input'), false)
+  assert.equal(isWorkerRunning('paused'), false)
+  assert.deepEqual({ ...workerStats([]) }, { total: 0, running: 0, waiting: 0 })
+  const workers = [
+    { id: 'a', status: 'running' },
+    { id: 'b', status: 'dispatching' },
+    { id: 'c', status: 'waiting' },
+    { id: 'd', status: 'failed' },
+    { id: 'e', status: 'idle', running: true },
+  ]
+  assert.deepEqual({ ...workerStats(workers) }, { total: 5, running: 3, waiting: 2 })
+  assert.deepEqual({ ...workerStats(undefined) }, { total: 0, running: 0, waiting: 0 })
+})
+
+test('the header shows total and running counts without shifting the title', async () => {
+  const plugin = await loadPlugin()
+  const { Header } = plugin.__internals
+  const t = (key, values) => values && values.count !== undefined ? `${key}:${values.count}` : key
+  const base = {
+    t,
+    conversation: { id: 's1', kind: 'super', title: 'Super Agent', workspacePath: '/tmp/work' },
+    statusLabel: { tone: 'running', label: 'statusRunning' },
+    usage: { status: 'loading', data: undefined },
+    now: 1,
+    stats: { total: 12, running: 3, waiting: 9 },
+    railOpen: true,
+    onNew: () => {},
+    onToggleRail: () => {},
+    onOpenInDsh: () => {},
+    onBack: () => {},
+  }
+  const title = Header(base).children[0].children[1].children[0]
+  assert.equal(title.props.className, 'sa-title')
+  assert.equal(title.children[0].props.className, 'sa-title-text')
+  assert.equal(title.children[0].children[0], 'Super Agent')
+  const counts = title.children[1]
+  assert.equal(counts.props.className, 'sa-title-counts')
+  assert.deepEqual(Array.from(counts.children, (child) => child.children[0]), ['workerCount:12', '·', 'workerRunningCount:3'])
+
+  const idle = Header({ ...base, stats: { total: 2, running: 0, waiting: 2 } }).children[0].children[1].children[0]
+  const idleCounts = idle.children[1].children.filter(Boolean)
+  assert.equal(idleCounts.length, 1)
+  assert.equal(idleCounts[0].children[0], 'workerCount:2')
+
+  const worker = Header({ ...base, conversation: { id: 'w1', kind: 'worker', title: 'Build', workspacePath: '/tmp/work' } }).children[0].children[1].children[0]
+  assert.equal(worker.children.filter(Boolean).length, 1, 'worker conversations do not render the Super Agent worker counts')
+
+  assert.equal(Header({ ...base, conversation: null, stats: undefined }).children[0].children[1].children[0].children.filter(Boolean).length, 1)
+})
+
+test('tag normalization is trimmed, deduped case-insensitively, and bounded', async () => {
+  const plugin = await loadPlugin()
+  const { normalizeTagList, MAX_TAG_CHARS } = plugin.__internals
+  assert.deepEqual(Array.from(normalizeTagList([' quant ', '#dsh', 'DSH', 'dsh', '', 'two  words'])), ['quant', 'dsh', 'two words'])
+  assert.deepEqual(Array.from(normalizeTagList(['a', 'b', 'a', 'c'], { limit: 2 })), ['a', 'b'])
+  assert.deepEqual(Array.from(normalizeTagList(null)), [])
+  assert.equal(normalizeTagList(['x'.repeat(80)])[0].length, MAX_TAG_CHARS)
+  assert.equal(normalizeTagList(Array.from({ length: 20 }, (_, index) => `tag-${index}`)).length, 8)
+})
+
+test('tag colours are deterministic and drawn from the stable hue palette', async () => {
+  const plugin = await loadPlugin()
+  const { tagHue, tagStyle, stableHash, TAG_HUES } = plugin.__internals
+  assert.equal(tagHue('quant'), tagHue('quant'))
+  assert.equal(tagHue('dsh'), tagHue('dsh'))
+  assert.notEqual(tagHue('quant'), tagHue('dsh'), 'common tags should not collide in the wider palette')
+  assert.equal(tagHue('quant'), 296)
+  assert.equal(tagHue('dsh'), 118)
+  for (const tag of ['quant', 'dsh', 'infra', 'memory', '研究']) assert.ok(TAG_HUES.includes(tagHue(tag)))
+  assert.equal(stableHash('quant'), 1062177260)
+  assert.deepEqual({ ...tagStyle('infra') }, { '--sa-tag-hue': String(tagHue('infra')) })
+})
+
+test('the tag filter uses any-of semantics and keeps Super Agent parents visible', async () => {
+  const plugin = await loadPlugin()
+  const { filterWorkers, groupConversations, workerTagIndex } = plugin.__internals
+  const workers = [
+    { id: 'w1', kind: 'worker', parentId: 's1', title: 'Quant', tags: ['quant', 'dsh'], updatedAt: 3 },
+    { id: 'w2', kind: 'worker', parentId: 's1', title: 'Infra', tags: ['infra'], updatedAt: 2 },
+    { id: 'w3', kind: 'worker', parentId: 's1', title: 'Memory', tags: ['memory'], updatedAt: 1 },
+  ]
+  assert.deepEqual(Array.from(filterWorkers(workers, []), (worker) => worker.id), ['w1', 'w2', 'w3'])
+  assert.deepEqual(Array.from(filterWorkers(workers, ['quant']), (worker) => worker.id), ['w1'])
+  assert.deepEqual(Array.from(filterWorkers(workers, ['dsh', 'infra']), (worker) => worker.id), ['w1', 'w2'])
+  assert.deepEqual(Array.from(filterWorkers(workers, ['quant', 'infra', 'memory']), (worker) => worker.id), ['w1', 'w2', 'w3'])
+  assert.deepEqual(Array.from(filterWorkers(workers, ['missing'])), [])
+
+  const parent = { id: 's1', kind: 'super', title: 'Super Agent', updatedAt: 4 }
+  const grouped = groupConversations([parent, ...workers], ['infra'])
+  assert.deepEqual(Array.from(grouped.groups[0].workers, (worker) => worker.id), ['w2'])
+  assert.deepEqual(Array.from(grouped.orphans), [])
+  assert.deepEqual(Array.from(groupConversations([parent, ...workers], ['missing']).groups[0].workers), [])
+
+  assert.deepEqual(Array.from(workerTagIndex([parent, ...workers]), (entry) => [entry.tag, entry.count]), [
+    ['dsh', 1], ['infra', 1], ['memory', 1], ['quant', 1],
+  ])
+})
+
+test('the tag filter persists across reloads and tolerates broken storage', async () => {
+  const plugin = await loadPlugin()
+  const { readTagFilter, writeTagFilter, TAG_FILTER_KEY } = plugin.__internals
+  assert.equal(TAG_FILTER_KEY, 'dsh-super-agent:tag-filter')
+  const values = new Map()
+  const storage = {
+    getItem: (key) => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  }
+  assert.deepEqual(Array.from(readTagFilter(storage)), [])
+  assert.deepEqual(Array.from(writeTagFilter(storage, [' quant ', 'QUANT', 'dsh'])), ['quant', 'dsh'])
+  assert.deepEqual(Array.from(readTagFilter(storage)), ['quant', 'dsh'])
+  assert.deepEqual(Array.from(writeTagFilter(storage, [])), [])
+  assert.equal(values.has(TAG_FILTER_KEY), false, 'clearing removes the persisted key')
+
+  values.set(TAG_FILTER_KEY, '{not json')
+  assert.deepEqual(Array.from(readTagFilter(storage)), [])
+  values.set(TAG_FILTER_KEY, JSON.stringify(['infra', 'infra', 42, '']))
+  assert.deepEqual(Array.from(readTagFilter(storage)), ['infra'])
+
+  const broken = {
+    getItem() { throw new Error('closed') },
+    setItem() { throw new Error('closed') },
+    removeItem() { throw new Error('closed') },
+  }
+  assert.deepEqual(Array.from(readTagFilter(broken)), [])
+  assert.doesNotThrow(() => writeTagFilter(broken, ['x']))
+})
+
+test('the rail filters workers by any selected tag and shows a clear empty state', async () => {
+  const plugin = await loadPlugin()
+  const { HistoryRail, workerTagIndex } = plugin.__internals
+  const t = (key, values) => values && values.count !== undefined ? `${key}:${values.count}` : key
+  const data = {
+    conversations: [
+      { id: 's1', kind: 'super', title: 'Super Agent', workspacePath: '/tmp/x', status: 'idle', updatedAt: 5 },
+      { id: 'w1', kind: 'worker', parentId: 's1', title: 'Quant worker', workspacePath: '/tmp/x', status: 'running', tags: ['quant', 'dsh'], updatedAt: 4 },
+      { id: 'w2', kind: 'worker', parentId: 's1', title: 'Infra worker', workspacePath: '/tmp/x', status: 'waiting', tags: ['infra'], updatedAt: 3 },
+    ],
+  }
+  const base = {
+    t, data, selectedId: 's1', now: 10, onSelect: () => {}, onNew: () => {}, onRefresh: () => {}, onClose: () => {},
+    expanded: {}, pending: [], pendingExpandedId: '', onOpenPending: () => {},
+    onToggleTag: () => {}, onClearFilter: () => {},
+  }
+  const filtered = HistoryRail({ ...base, filterTags: ['dsh'] })
+  const filteredText = JSON.stringify(filtered)
+  assert.match(filteredText, /Quant worker/)
+  assert.equal(filteredText.includes('Infra worker'), false, 'a worker with none of the selected tags is hidden')
+  const { TagFilterBar } = plugin.__internals
+  const filterBarTree = TagFilterBar({ t, tags: workerTagIndex(data.conversations), active: ['dsh'], onToggle: () => {}, onClear: () => {}, shown: 1, total: 2 })
+  const filterBarText = JSON.stringify(filterBarTree)
+  assert.match(filterBarText, /tagFilterActive:1/)
+  assert.match(filterBarText, /tagFilterClear/)
+  assert.match(filterBarText, /tagFilterHint/)
+  assert.match(filterBarText, /tagFilterWorkers/)
+
+  const empty = HistoryRail({ ...base, filterTags: ['memory'] })
+  const emptyText = JSON.stringify(empty)
+  assert.match(emptyText, /noWorkersWithTags/)
+  assert.equal(emptyText.includes('Quant worker'), false)
+  const filterBar = empty.children[1].children[0].children[1].children[0]
+  assert.equal(typeof filterBar.type, 'function')
+  assert.equal(filterBar.props.tags.length, 3)
+  const chipsTree = TagFilterBar({ t, tags: filterBar.props.tags, active: [], onToggle: () => {}, onClear: () => {}, shown: 0, total: 3 })
+  assert.equal(chipsTree.props['data-sa-tag-filter'], '1')
+  const chips = chipsTree.children[1].children[0]
+  assert.deepEqual(Array.from(chips, (chip) => chip.props['aria-pressed']), ['false', 'false', 'false'])
+  assert.equal(chips[0].props.style['--sa-tag-hue'] !== undefined, true)
+
+  const activeChips = TagFilterBar({ t, tags: filterBar.props.tags, active: ['quant'], onToggle: () => {}, onClear: () => {}, shown: 1, total: 3 }).children[1].children[0]
+  assert.equal(activeChips.find((chip) => chip.props.key === 'quant').props['aria-pressed'], 'true')
+})
+
+test('worker detail renders tag chips with add and remove affordances', async () => {
+  const plugin = await loadPlugin()
+  const { WorkerTagsBar } = plugin.__internals
+  const t = (key, values) => values && values.count !== undefined ? `${key}:${values.count}` : key
+  const tree = WorkerTagsBar({
+    t,
+    worker: { id: 'w1', kind: 'worker', title: 'Quant', tags: ['quant', 'dsh'] },
+    onSave: async () => {},
+  })
+  assert.equal(tree.props['data-sa-worker-tags'], 'w1')
+  const text = JSON.stringify(tree)
+  assert.match(text, /quant/)
+  assert.match(text, /dsh/)
+  assert.match(text, /sa-tag-remove/)
+  assert.match(text, /tagPlaceholder/)
+  assert.match(text, /addTag/)
+  assert.match(text, /"sa-tag-remove"/)
+})
+
+test('turn ownership maps tool calls, dispatch results, and notices to worker tags', async () => {
+  const plugin = await loadPlugin()
+  const { turnWorkerIds, turnTagMap, turnFromLabel } = plugin.__internals
+  const workers = [
+    { id: 'w1', kind: 'worker', title: 'Quant audit', tags: ['quant', 'dsh'] },
+    { id: 'w2', kind: 'worker', title: 'Infra fix', tags: ['infra'] },
+    { id: 'w3', kind: 'worker', title: 'Memory store', tags: ['memory'] },
+  ]
+  const entries = [
+    event('turn/start', { turn: 1 }, 1),
+    event('tool/call', { turn: 1, callId: 'c1', name: 'superagent_dispatch_task', arguments: JSON.stringify({ title: 'Quant audit', prompt: 'x' }) }, 2),
+    event('tool/result', { turn: 1, message: { toolCallId: 'c1', content: [{ type: 'text', text: JSON.stringify({ id: 'w1', title: 'Quant audit' }) }] } }, 3),
+    event('turn/end', { turn: 1, reason: { kind: 'completed' } }, 4),
+    event('turn/start', { turn: 2 }, 5),
+    event('user/message', { source: { kind: 'dsh-super-agent', form: 'notice', summary: 'Worker finished: Infra fix' }, content: [{ type: 'text', text: 'Worker "Infra fix" finished a turn.' }] }, 6),
+    event('assistant/message', { turn: 2, message: { content: [{ type: 'text', text: 'Relayed.' }] } }, 7),
+    event('turn/end', { turn: 2, reason: { kind: 'completed' } }, 8),
+    event('turn/start', { turn: 3 }, 9),
+    event('tool/call', { turn: 3, callId: 'c2', name: 'superagent_send_message', arguments: JSON.stringify({ worker_id: 'w1', message: 'x' }) }, 10),
+    event('tool/call', { turn: 3, callId: 'c3', name: 'superagent_worker_output', arguments: JSON.stringify({ worker_id: 'w2' }) }, 11),
+    event('turn/end', { turn: 3, reason: { kind: 'completed' } }, 12),
+    event('turn/start', { turn: 4 }, 13),
+    event('turn/end', { turn: 4, reason: { kind: 'completed' } }, 14),
+  ]
+  const owned = turnWorkerIds(entries, workers)
+  assert.deepEqual(Array.from(owned.get(1)), ['w1'])
+  assert.deepEqual(Array.from(owned.get(2)), ['w2'])
+  assert.deepEqual(Array.from(owned.get(3)), ['w1', 'w2'])
+  assert.equal(owned.has(4), false)
+  const map = turnTagMap(entries, workers)
+  assert.deepEqual(Array.from(map.get(1).tags), ['quant', 'dsh'])
+  assert.deepEqual(Array.from(map.get(2).tags), ['infra'])
+  assert.deepEqual(Array.from(map.get(3).tags), ['quant', 'dsh', 'infra'])
+  assert.equal(map.get(1).primary, 'quant')
+  assert.equal(map.get(1).secondary, 'dsh')
+  assert.equal(map.get(2).secondary, '')
+  assert.equal(map.has(4), false)
+  assert.equal(turnFromLabel('Jump to turn 42'), 42)
+  assert.equal(turnFromLabel('跳转到第 7 轮'), 7)
+  assert.equal(turnFromLabel('Load and jump to turn 3'), 3)
+  assert.equal(turnFromLabel('Turn navigation'), undefined)
+})
+
+test('turn rail decoration marks multi-tag turns with a primary colour and a secondary stripe', async () => {
+  const plugin = await loadPlugin()
+  const { turnTagMap, markerPresentation, decorateTurnMarks } = plugin.__internals
+  const t = (key, values) => `${key}:${values.turn}:${values.tags}`
+  const workers = [{ id: 'w1', kind: 'worker', title: 'Quant audit', tags: ['quant', 'dsh'] }]
+  const map = turnTagMap([
+    event('turn/start', { turn: 1 }, 1),
+    event('tool/call', { turn: 1, callId: 'c1', name: 'superagent_send_message', arguments: JSON.stringify({ worker_id: 'w1' }) }, 2),
+  ], workers)
+  const info = map.get(1)
+  const presentation = markerPresentation(info, t)
+  assert.equal(presentation.attributes['data-sa-turn-tag'], '1')
+  assert.equal(presentation.attributes['data-sa-tags'], 'quant,dsh')
+  assert.equal(presentation.attributes['data-sa-secondary'], '1')
+  assert.equal(presentation.attributes.title, 'turnTagsTitle:1:quant, dsh')
+  assert.deepEqual({ ...presentation.style }, { '--sa-tag-primary-hue': '296', '--sa-tag-secondary-hue': '118' })
+  const neutral = markerPresentation(undefined, t)
+  assert.deepEqual({ ...neutral.attributes }, {})
+  assert.deepEqual({ ...neutral.style }, {})
+
+  const fakeMark = (label) => {
+    const attributes = { 'aria-label': label }
+    const style = {
+      values: {},
+      setProperty(name, value) { this.values[name] = value },
+      removeProperty(name) { delete this.values[name] },
+    }
+    return {
+      attributes,
+      style,
+      getAttribute(name) { return Object.hasOwn(attributes, name) ? attributes[name] : null },
+      setAttribute(name, value) { attributes[name] = String(value) },
+      removeAttribute(name) { delete attributes[name] },
+    }
+  }
+  const first = fakeMark('Jump to turn 1')
+  first.setAttribute('data-sa-tags', 'stale')
+  first.setAttribute('data-sa-turn-tag', '1')
+  first.setAttribute('title', 'old')
+  const second = fakeMark('Load and jump to turn 2')
+  const root = { querySelectorAll(selector) { assert.equal(selector, 'nav button[data-index]'); return [first, second] } }
+  const result = decorateTurnMarks(root, map, t)
+  assert.deepEqual({ ...result }, { marks: 2, tagged: 1 })
+  assert.equal(first.attributes['data-sa-turn-tag'], '1')
+  assert.equal(first.attributes['data-sa-tags'], 'quant,dsh')
+  assert.equal(first.attributes['data-sa-secondary'], '1')
+  assert.equal(first.attributes.title, 'turnTagsTitle:1:quant, dsh')
+  assert.equal(first.style.values['--sa-tag-primary-hue'], '296')
+  assert.equal(first.style.values['--sa-tag-secondary-hue'], '118')
+  assert.equal(second.attributes['data-sa-turn-tag'], undefined, 'a turn without tags stays neutral')
+  assert.equal(second.attributes.title, undefined)
+
+  // A later update without tags clears the decoration it previously wrote.
+  const empty = decorateTurnMarks({ querySelectorAll: () => [first] }, new Map(), t)
+  assert.deepEqual({ ...empty }, { marks: 1, tagged: 0 })
+  assert.equal(first.attributes['data-sa-turn-tag'], undefined)
+  assert.equal(first.attributes.title, undefined)
+  assert.equal(first.style.values['--sa-tag-primary-hue'], undefined)
+})
+
+test('the turn legend shows the active filter colours and a clear action', async () => {
+  const plugin = await loadPlugin()
+  const { TurnTagLegend } = plugin.__internals
+  const t = (key) => key
+  assert.equal(TurnTagLegend({ t, tags: [] }), null)
+  const tree = TurnTagLegend({ t, tags: ['quant', 'dsh'], onClear: () => {} })
+  assert.equal(tree.props['data-sa-turn-legend'], '1')
+  const text = JSON.stringify(tree)
+  assert.match(text, /quant/)
+  assert.match(text, /dsh/)
+  assert.match(text, /turnTagLegend/)
+  assert.match(text, /tagFilterClear/)
+  const swatches = tree.children[1]
+  assert.equal(Array.from(swatches).every((chip) => chip.props.style['--sa-tag-hue'] !== undefined), true)
 })

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, test } from 'node:test'
-import { StateStore, defaultStateDir, emptyState, normalizeState, profileName } from '../lib/state.js'
+import { MAX_WORKER_TAGS, StateStore, defaultStateDir, emptyState, normalizeState, normalizeTags, profileName } from '../lib/state.js'
 
 const dirs = []
 afterEach(async () => {
@@ -118,4 +118,30 @@ test('state is scoped to the profile so two DSH processes do not share one catal
   assert.equal(defaultStateDir({ DSH_HOME: '/home/.dsh', DSH_PROFILE: 'desktop' }, '/home', []), '/home/.dsh/state/dsh-super-agent')
   assert.equal(defaultStateDir({ DSH_HOME: '/home/.dsh', DSH_PROFILE: 'web' }, '/home', []), '/home/.dsh/state/dsh-super-agent/profiles/web')
   assert.equal(defaultStateDir({ DSH_HOME: '/home/.dsh' }, '/home', ['node', '--profile', 'web']), '/home/.dsh/state/dsh-super-agent/profiles/web')
+})
+
+
+test('worker tags are trimmed, deduped case-insensitively, bounded, and persisted', async () => {
+  assert.deepEqual(normalizeTags([' quant ', '#dsh', 'DSH', 'dsh', '', '  two  words  ', 42]), ['quant', 'dsh', 'two words'])
+  assert.deepEqual(normalizeTags(['a', 'b', 'a', 'c'], { limit: 2 }), ['a', 'b'])
+  assert.deepEqual(normalizeTags('not-an-array'), [])
+  assert.equal(normalizeTags(Array.from({ length: 20 }, (_, index) => `tag-${index}`)).length, MAX_WORKER_TAGS)
+
+  const { file, store } = await temporaryStore()
+  await store.update((state) => {
+    state.conversations['w1'] = conversation('w1', { kind: 'worker', tags: [' quant ', 'DSH', 'quant'] })
+    state.conversations['w2'] = conversation('w2', { kind: 'worker', tags: ['quant', 'infra', 'INFRA'] })
+  })
+  assert.deepEqual(store.snapshot().conversations.w1.tags, ['quant', 'DSH'])
+  assert.deepEqual(store.snapshot().conversations.w2.tags, ['quant', 'infra'])
+
+  // The same tag on two workers is the many-to-many case and must survive a reload.
+  const reloaded = new StateStore(file)
+  await reloaded.load()
+  assert.deepEqual(reloaded.conversation('w1').tags, ['quant', 'DSH'])
+  assert.deepEqual(reloaded.conversation('w2').tags, ['quant', 'infra'])
+
+  // A record from an older state file (no tags field) normalizes to an empty list.
+  const legacy = normalizeState({ version: 1, conversations: { old: conversation('old', { kind: 'worker' }) } })
+  assert.deepEqual(legacy.conversations.old.tags, [])
 })

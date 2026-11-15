@@ -21,6 +21,11 @@ window.__ModuleLoader__.load({
       conversations: 'dsh-super-agent:rail:conversations',
       pending: 'dsh-super-agent:rail:pending',
     }
+    const TAG_FILTER_KEY = 'dsh-super-agent:tag-filter'
+    const MAX_WORKER_TAGS = 8
+    const MAX_TAG_CHARS = 24
+    const TAG_FILTER_LIMIT = 32
+    const TAG_HUES = [358, 12, 26, 40, 52, 68, 84, 100, 118, 136, 152, 168, 184, 198, 212, 226, 240, 254, 268, 282, 296, 310, 324, 340]
     const PENDING_ANSWER_DISMISS_MS = 1800
     const SURFACE_STOCK = 'stock'
     const SURFACE_CUSTOM = 'custom'
@@ -109,6 +114,22 @@ window.__ModuleLoader__.load({
         untitled: '未命名',
         workspaceFallback: 'workspace',
         workerCount: '{count} 个 worker',
+        workerRunningCount: '{count} 个运行中',
+        workerTags: '标签',
+        tagPlaceholder: '添加标签…',
+        addTag: '添加',
+        removeTag: '移除标签',
+        tagLimit: '每个 worker 最多 {count} 个标签',
+        tagSaveFailed: '标签保存失败',
+        tagFilter: '按标签筛选',
+        tagFilterActive: '{count} 个筛选',
+        tagFilterClear: '清除标签筛选',
+        tagFilterHint: '显示带有任一选中标签的 worker（any 语义）。',
+        tagFilterWorkers: '{shown}/{total} 个 worker',
+        noWorkersWithTags: '没有带有这些标签的 worker。',
+        tagsEmpty: '还没有标签',
+        turnTagLegend: '轮次颜色',
+        turnTagsTitle: '第 {turn} 轮 · {tags}',
         copy: '复制',
         copied: '已复制',
         codeBlock: '代码',
@@ -236,6 +257,22 @@ window.__ModuleLoader__.load({
         untitled: 'Untitled',
         workspaceFallback: 'workspace',
         workerCount: '{count} workers',
+        workerRunningCount: '{count} running',
+        workerTags: 'Tags',
+        tagPlaceholder: 'Add tag…',
+        addTag: 'Add',
+        removeTag: 'Remove tag',
+        tagLimit: 'At most {count} tags per worker',
+        tagSaveFailed: 'Could not save the tags',
+        tagFilter: 'Filter by tag',
+        tagFilterActive: '{count} filters',
+        tagFilterClear: 'Clear tag filters',
+        tagFilterHint: 'Showing workers with any of the selected tags (any semantics).',
+        tagFilterWorkers: '{shown}/{total} workers',
+        noWorkersWithTags: 'No workers with these tags.',
+        tagsEmpty: 'No tags yet',
+        turnTagLegend: 'Turn colours',
+        turnTagsTitle: 'Turn {turn} · {tags}',
         copy: 'Copy',
         copied: 'Copied',
         codeBlock: 'Code',
@@ -292,7 +329,12 @@ window.__ModuleLoader__.load({
 .sa-brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px;
   background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent); color: var(--dsw-alias-brand-primary); flex: 0 0 auto; }
 .sa-brand-text { min-width: 0; }
-.sa-title { font-size: 14px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sa-title { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; }
+.sa-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sa-title-counts { flex: 0 0 auto; display: inline-flex; align-items: baseline; gap: 4px; color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+.sa-title-count { font-variant-numeric: tabular-nums; }
+.sa-title-sep { color: var(--dsw-alias-label-caption); }
 .sa-subtitle { font-size: 12px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sa-top-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
 .sa-usage { position: relative; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
@@ -515,6 +557,63 @@ window.__ModuleLoader__.load({
 .sa-pending-answer-label { font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
   color: var(--dsw-alias-label-caption); margin-bottom: 3px; }
 .sa-pending-answer-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dsw-alias-label-primary); }
+.sa-tag-chip { --sa-tag-hue: 210; display: inline-flex; align-items: center; gap: 4px; max-width: 170px; padding: 1px 6px;
+  border-radius: 999px; border: 1px solid hsl(var(--sa-tag-hue) 58% 50% / .34);
+  background: hsl(var(--sa-tag-hue) 62% 50% / .10); color: var(--dsw-alias-label-secondary);
+  font-size: 10.5px; line-height: 1.65; white-space: nowrap; }
+.sa-tag-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sa-tag-swatch { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: hsl(var(--sa-tag-hue) 68% 48%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--dsw-alias-bg-base) 55%, transparent); }
+.sa-tag-remove { flex: 0 0 auto; display: inline-grid; place-items: center; width: 13px; height: 13px; padding: 0; border: 0;
+  border-radius: 50%; background: transparent; color: var(--dsw-alias-label-caption); font: inherit; font-size: 12px;
+  line-height: 1; cursor: pointer; }
+.sa-tag-remove:hover { color: var(--dsw-alias-state-error-primary); background: var(--dsw-alias-bg-layer-2); }
+.sa-worker-tags-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 0 0 auto; padding: 6px 18px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary); font-size: 11.5px; }
+.sa-tags-label { font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--dsw-alias-label-caption); }
+.sa-tag-add { display: inline-flex; align-items: center; gap: 4px; }
+.sa-tag-add input { width: 96px; height: 22px; padding: 0 7px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px;
+  background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font: inherit; font-size: 11px; outline: none; }
+.sa-tag-add input:focus { border-color: var(--dsw-alias-brand-primary); }
+.sa-tag-add button { height: 22px; padding: 0 7px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font: inherit; font-size: 11px; cursor: pointer; }
+.sa-tag-add button:disabled { opacity: .5; cursor: default; }
+.sa-tags-empty, .sa-tags-hint { color: var(--dsw-alias-label-caption); font-size: 10.5px; }
+.sa-tags-error { color: var(--dsw-alias-state-error-primary); font-size: 10.5px; }
+.sa-tag-filter { display: flex; flex-direction: column; gap: 5px; padding: 4px 7px 8px; margin: 0 0 4px;
+  border-bottom: 1px dashed var(--dsw-alias-border-l1); }
+.sa-tag-filter-head { display: flex; align-items: center; gap: 6px; }
+.sa-tag-filter-title { font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--dsw-alias-label-caption); }
+.sa-tag-filter-active { color: var(--dsw-alias-brand-primary); font-size: 10.5px; font-weight: 600; }
+.sa-tag-filter-clear { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--dsw-alias-brand-primary);
+  font: inherit; font-size: 10.5px; cursor: pointer; }
+.sa-tag-filter-clear:hover { text-decoration: underline; }
+.sa-tag-filter-chips { display: flex; flex-wrap: wrap; gap: 4px; max-height: 84px; overflow-y: auto; }
+.sa-tag-filter-chip { --sa-tag-hue: 210; display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l1); background: transparent; color: var(--dsw-alias-label-secondary);
+  font: inherit; font-size: 10.5px; line-height: 1.6; cursor: pointer; }
+.sa-tag-filter-chip:hover { background: var(--dsw-alias-bg-layer-2); }
+.sa-tag-filter-chip[aria-pressed="true"] { border-color: hsl(var(--sa-tag-hue) 58% 50% / .55);
+  background: hsl(var(--sa-tag-hue) 62% 50% / .16); color: var(--dsw-alias-label-primary); }
+.sa-tag-filter-count { color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; }
+.sa-tag-filter-hint { color: var(--dsw-alias-label-caption); font-size: 10.5px; line-height: 1.45; }
+.sa-tag-filter-empty { padding: 8px 7px 10px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.5; }
+.sa-tag-filter-empty button { margin-top: 6px; }
+.sa-item-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+.sa-item-tags .sa-tag-chip { padding: 0 5px; font-size: 10px; line-height: 1.55; max-width: 120px; }
+.sa-turn-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: 0 0 auto; padding: 5px 18px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.sa-turn-legend-title { font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--dsw-alias-label-caption); }
+.sa-turn-legend-clear { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--dsw-alias-brand-primary);
+  font: inherit; font-size: 10.5px; cursor: pointer; }
+.sa-turn-legend-clear:hover { text-decoration: underline; }
+[data-sa-turn-tag="1"]::before { background: hsl(var(--sa-tag-primary-hue, 210) 68% 48%) !important; }
+[data-sa-turn-tag="1"][data-sa-secondary="1"]::before {
+  background: linear-gradient(90deg,
+    hsl(var(--sa-tag-primary-hue, 210) 68% 48%) 0 70%,
+    hsl(var(--sa-tag-secondary-hue, 210) 68% 48%) 70% 100%) !important; }
 .sa-overlay { position: absolute; inset: 0; z-index: 20; background: color-mix(in srgb, #000 28%, transparent); display: flex;
   align-items: flex-start; justify-content: center; padding-top: 9vh; }
 .sa-dialog { width: min(92%, 460px); border-radius: 14px; border: 1px solid var(--dsw-alias-border-l1);
@@ -793,12 +892,95 @@ window.__ModuleLoader__.load({
     }
 
 
-    /** Group workers under their Super Agent conversation. */
-    function groupConversations(conversations) {
+    /**
+     * Trim, collapse, dedupe (case-insensitively), and bound a tag list.
+     * The host applies the authoritative version; the client uses this for
+     * immediate inline-edit feedback and to sanitize persisted filter state.
+     */
+    function normalizeTagList(value, { limit = MAX_WORKER_TAGS, maxLength = MAX_TAG_CHARS } = {}) {
+      if (!Array.isArray(value)) return []
+      const seen = new Set()
+      const tags = []
+      for (const entry of value) {
+        if (typeof entry !== 'string') continue
+        const tag = entry.trim().replace(/^#+/, '').replace(/\s+/g, ' ').slice(0, maxLength).trim()
+        if (tag.length === 0) continue
+        const key = tag.toLocaleLowerCase()
+        if (seen.has(key)) continue
+        seen.add(key)
+        tags.push(tag)
+        if (tags.length >= limit) break
+      }
+      return tags
+    }
+
+    /** FNV-1a over UTF-16 code units; stable across browsers and reloads. */
+    function stableHash(value) {
+      let hash = 2166136261
+      const text = String(value || '')
+      for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index)
+        hash = Math.imul(hash, 16777619)
+      }
+      return hash >>> 0
+    }
+
+    /** Deterministic hue for one tag (24-entry palette). */
+    function tagHue(tag) {
+      return TAG_HUES[stableHash(tag) % TAG_HUES.length]
+    }
+
+    /** CSS custom properties the tag swatch/chip and turn marker read. */
+    function tagStyle(tag) {
+      return { '--sa-tag-hue': String(tagHue(tag)) }
+    }
+
+    /** Whether a worker status counts as in progress. Waiting/idle does not. */
+    function isWorkerRunning(status) {
+      return status === 'running' || status === 'dispatching'
+    }
+
+    /** Total and in-progress worker counts for the header. */
+    function workerStats(workers) {
+      const list = Array.isArray(workers) ? workers.filter((worker) => worker && typeof worker === 'object') : []
+      const running = list.filter((worker) => worker.running === true || isWorkerRunning(worker.status)).length
+      return { total: list.length, running, waiting: list.length - running }
+    }
+
+    /** The distinct tags across a conversation list, with worker counts. */
+    function workerTagIndex(conversations) {
+      const byTag = new Map()
+      for (const worker of Array.isArray(conversations) ? conversations : []) {
+        if (!worker || worker.kind !== 'worker') continue
+        for (const tag of normalizeTagList(worker.tags)) {
+          const key = tag.toLocaleLowerCase()
+          const entry = byTag.get(key) || { tag, count: 0 }
+          entry.count += 1
+          byTag.set(key, entry)
+        }
+      }
+      return [...byTag.values()].sort((left, right) => left.tag < right.tag ? -1 : left.tag > right.tag ? 1 : 0)
+    }
+
+    /** Workers whose tags contain any selected tag; an empty filter matches all. */
+    function filterWorkers(workers, filterTags) {
+      const selected = normalizeTagList(filterTags, { limit: TAG_FILTER_LIMIT })
+      if (selected.length === 0) return Array.isArray(workers) ? workers.slice() : []
+      const wanted = new Set(selected.map((tag) => tag.toLocaleLowerCase()))
+      return (Array.isArray(workers) ? workers : []).filter((worker) => normalizeTagList(worker && worker.tags)
+        .some((tag) => wanted.has(tag.toLocaleLowerCase())))
+    }
+
+    /**
+     * Group workers under their Super Agent conversation. An active tag filter
+     * keeps only matching workers (any-of semantics); Super Agent rows remain
+     * so the hierarchy and selection stay navigable.
+     */
+    function groupConversations(conversations, filterTags = []) {
       const items = Array.isArray(conversations) ? conversations.slice() : []
       const byUpdated = (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)
       const supers = items.filter((item) => item.kind === 'super').sort(byUpdated)
-      const workers = items.filter((item) => item.kind === 'worker')
+      const workers = filterWorkers(items.filter((item) => item.kind === 'worker'), filterTags)
       const known = new Set(supers.map((item) => item.id))
       const groups = supers.map((parent) => ({
         parent,
@@ -915,6 +1097,188 @@ window.__ModuleLoader__.load({
       return { workers, active, latest }
     }
 
+    /** Tools whose arguments name the worker a Super Agent turn is working on. */
+    const WORKER_TOOL_NAMES = new Set([
+      'superagent_send_message',
+      'superagent_worker_output',
+      'superagent_worker_tags',
+      'superagent_stop_worker',
+    ])
+
+    /** The worker ids a Super Agent turn touched, in first-touch order. */
+    function turnWorkerIds(entries, workers) {
+      const list = (Array.isArray(workers) ? workers : []).filter((worker) => worker && typeof worker.id === 'string')
+      const byId = new Set(list.map((worker) => worker.id))
+      const byTitle = new Map()
+      for (const worker of list) {
+        const title = typeof worker.title === 'string' ? worker.title.trim() : ''
+        if (!title) continue
+        const ids = byTitle.get(title) || []
+        ids.push(worker.id)
+        byTitle.set(title, ids)
+      }
+      const calls = new Map()
+      const owned = new Map()
+      let currentTurn
+      const associate = (turn, id) => {
+        if (!Number.isInteger(turn) || typeof id !== 'string' || !byId.has(id)) return
+        const ids = owned.get(turn) || []
+        if (!ids.includes(id)) ids.push(id)
+        owned.set(turn, ids)
+      }
+      const associateTitle = (turn, title) => {
+        if (typeof title !== 'string') return
+        for (const id of byTitle.get(title.trim()) || []) associate(turn, id)
+      }
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        if (!entry || entry.type !== 'event' || !entry.event) continue
+        const event = entry.event
+        const data = event.data && typeof event.data === 'object' ? event.data : {}
+        if (event.type === 'turn/start') {
+          if (Number.isInteger(data.turn)) currentTurn = data.turn
+          continue
+        }
+        const turn = Number.isInteger(data.turn) ? data.turn : currentTurn
+        if (event.type === 'tool/call') {
+          const name = typeof data.name === 'string' ? data.name : ''
+          const args = parseToolArgs(data.arguments)
+          calls.set(data.callId, { name, args, turn })
+          if (WORKER_TOOL_NAMES.has(name) && typeof args.worker_id === 'string') associate(turn, args.worker_id)
+          // While a dispatch turn is still streaming, its result does not exist
+          // yet; the task title already identifies an existing worker.
+          if (name === 'superagent_dispatch_task' && typeof args.title === 'string') associateTitle(turn, args.title)
+          continue
+        }
+        if (event.type === 'tool/result') {
+          const message = data.message
+          const call = calls.get((message && message.toolCallId) || data.toolCallId)
+          if (call && call.name === 'superagent_dispatch_task') {
+            const output = textOfMessage(message)
+            if (output) {
+              try {
+                const parsed = JSON.parse(output)
+                const id = parsed && (parsed.id || (parsed.worker && parsed.worker.id) || parsed.worker_id)
+                if (typeof id === 'string') associate(call.turn, id)
+              } catch { /* a failed dispatch keeps its title association */ }
+            }
+          }
+          continue
+        }
+        if (event.type !== 'user/message') continue
+        const source = data.source && typeof data.source === 'object' ? data.source : {}
+        if (source.kind !== 'dsh-super-agent' && source.plugin !== 'dsh-super-agent') continue
+        const text = textOfMessage(data)
+        const summary = typeof source.summary === 'string' ? source.summary : ''
+        const quoted = /Worker\s+"([^"]+)"/.exec(text)
+        if (quoted) {
+          associateTitle(turn, quoted[1])
+          continue
+        }
+        // Titles are also the stable join key in notices such as
+        // "Worker finished: <title>"; try the longest match first.
+        const haystack = `${summary}\n${text}`
+        for (const worker of list.slice().sort((left, right) => String(right.title || '').length - String(left.title || '').length)) {
+          if (worker.title && haystack.includes(worker.title)) associate(turn, worker.id)
+        }
+      }
+      return owned
+    }
+
+    /**
+     * Per-turn tag ownership for the stock turn rail.
+     *
+     * A turn can touch several workers; the owning tag set is the ordered union
+     * of their tags. The first tag is the primary marker colour and the first
+     * different tag becomes the secondary stripe, so a multi-tag turn is never
+     * reduced to one ambiguous colour.
+     */
+    function turnTagMap(entries, workers) {
+      const list = (Array.isArray(workers) ? workers : []).filter((worker) => worker && typeof worker.id === 'string')
+      const byId = new Map(list.map((worker) => [worker.id, normalizeTagList(worker.tags)]))
+      const map = new Map()
+      for (const [turn, ids] of turnWorkerIds(entries, list)) {
+        const tags = []
+        const seen = new Set()
+        for (const id of ids) {
+          for (const tag of byId.get(id) || []) {
+            const key = tag.toLocaleLowerCase()
+            if (seen.has(key)) continue
+            seen.add(key)
+            tags.push(tag)
+          }
+        }
+        if (tags.length === 0) continue
+        const primary = tags[0]
+        const secondary = tags.find((tag) => tag.toLocaleLowerCase() !== primary.toLocaleLowerCase()) || ''
+        map.set(turn, { turn, tags, primary, secondary })
+      }
+      return map
+    }
+
+    /** The first integer in a localized turn-navigation aria-label. */
+    function turnFromLabel(label) {
+      const match = /(\d+)/.exec(String(label || ''))
+      return match ? Number(match[1]) : undefined
+    }
+
+    /** Attributes and CSS custom properties for one decorated rail marker. */
+    function markerPresentation(info, t) {
+      if (!info || typeof info.primary !== 'string' || info.primary.length === 0) return { attributes: {}, style: {} }
+      const attributes = {
+        'data-sa-turn-tag': '1',
+        'data-sa-tags': info.tags.join(','),
+        title: t ? t('turnTagsTitle', { turn: info.turn, tags: info.tags.join(', ') }) : `Turn ${info.turn} · ${info.tags.join(', ')}`,
+      }
+      if (info.secondary) attributes['data-sa-secondary'] = '1'
+      return {
+        attributes,
+        style: {
+          '--sa-tag-primary-hue': String(tagHue(info.primary)),
+          '--sa-tag-secondary-hue': String(tagHue(info.secondary || info.primary)),
+        },
+      }
+    }
+
+    /**
+     * Decorate the stock turn-rail buttons without touching their handlers.
+     * Only attributes, a title tooltip, and two CSS variables are written, so
+     * scrolling, jumping, virtualization, and focus behavior stay stock.
+     */
+    function decorateTurnMarks(root, turnTags, t) {
+      const marks = root && typeof root.querySelectorAll === 'function' ? root.querySelectorAll('nav button[data-index]') : []
+      const decorate = { marks: marks.length, tagged: 0 }
+      for (const mark of marks) {
+        if (!mark || typeof mark.getAttribute !== 'function' || typeof mark.setAttribute !== 'function') continue
+        const turn = turnFromLabel(mark.getAttribute('aria-label'))
+        const info = turn !== undefined && turnTags && typeof turnTags.get === 'function' ? turnTags.get(turn) : undefined
+        const wasTagged = mark.getAttribute('data-sa-turn-tag') === '1'
+        if (!info) {
+          if (wasTagged) {
+            for (const name of ['data-sa-turn-tag', 'data-sa-tags', 'data-sa-secondary', 'title']) mark.removeAttribute(name)
+            if (mark.style && typeof mark.style.removeProperty === 'function') {
+              mark.style.removeProperty('--sa-tag-primary-hue')
+              mark.style.removeProperty('--sa-tag-secondary-hue')
+            }
+          }
+          continue
+        }
+        const { attributes, style } = markerPresentation(info, t)
+        // The observer runs on every child insertion, including virtualized
+        // rail scrolling; skip DOM writes that would not change anything.
+        for (const [name, value] of Object.entries(attributes)) {
+          if (mark.getAttribute(name) !== value) mark.setAttribute(name, value)
+        }
+        if (mark.style && typeof mark.style.setProperty === 'function') {
+          for (const [name, value] of Object.entries(style)) {
+            const current = typeof mark.style.getPropertyValue === 'function' ? mark.style.getPropertyValue(name) : undefined
+            if (current !== value) mark.style.setProperty(name, value)
+          }
+        }
+        decorate.tagged += 1
+      }
+      return decorate
+    }
+
     /** One-line progress text without breaking the compact strip. */
     function clipText(text, limit = 160) {
       const value = String(text || '').replace(/\s+/g, ' ').trim()
@@ -929,6 +1293,27 @@ window.__ModuleLoader__.load({
     /** Persist one rail section's expanded state; storage errors are harmless. */
     function writeRailExpanded(storage, key, expanded) {
       try { storage.setItem(key, expanded ? '1' : '0') } catch { /* private mode / closed storage */ }
+    }
+
+    /** Read the persisted multi-select tag filter; malformed values clear it. */
+    function readTagFilter(storage) {
+      try {
+        const raw = storage.getItem(TAG_FILTER_KEY)
+        if (!raw) return []
+        return normalizeTagList(JSON.parse(raw), { limit: TAG_FILTER_LIMIT })
+      } catch {
+        return []
+      }
+    }
+
+    /** Persist the tag filter (same failure-tolerant pattern as rail collapse). */
+    function writeTagFilter(storage, tags) {
+      const normalized = normalizeTagList(tags, { limit: TAG_FILTER_LIMIT })
+      try {
+        if (normalized.length === 0) storage.removeItem(TAG_FILTER_KEY)
+        else storage.setItem(TAG_FILTER_KEY, JSON.stringify(normalized))
+      } catch { /* private mode / closed storage */ }
+      return normalized
     }
 
     /** Unanswered decisions, newest first, for the sidebar and question card. */
@@ -1283,13 +1668,22 @@ window.__ModuleLoader__.load({
     }
 
     /** The header of the panel. */
-    function Header({ t, conversation, statusLabel, usage, now, onNew, onToggleRail, railOpen, onOpenInDsh, onBack }) {
+    function Header({ t, conversation, statusLabel, usage, now, stats, onNew, onToggleRail, railOpen, onOpenInDsh, onBack }) {
       const isWorker = conversation && conversation.kind === 'worker'
+      const title = isWorker ? `${t('worker')} · ${conversation.title}` : (conversation ? conversation.title : t('title'))
+      const counts = !isWorker && conversation && stats && stats.total > 0
+        ? h('span', { className: 'sa-title-counts' },
+          h('span', { className: 'sa-title-count' }, t('workerCount', { count: stats.total })),
+          stats.running > 0 && h('span', { className: 'sa-title-sep' }, '·'),
+          stats.running > 0 && h('span', { className: 'sa-title-count sa-title-running' }, t('workerRunningCount', { count: stats.running })))
+        : null
       return h('div', { className: 'sa-top' },
         h('div', { className: 'sa-brand' },
           h('span', { className: 'sa-brand-mark' }, h(Icon, { size: 20, active: true })),
           h('div', { className: 'sa-brand-text' },
-            h('div', { className: 'sa-title' }, isWorker ? `${t('worker')} · ${conversation.title}` : (conversation ? conversation.title : t('title'))),
+            h('div', { className: 'sa-title', title },
+              h('span', { className: 'sa-title-text' }, title),
+              counts),
             h('div', { className: 'sa-subtitle' }, isWorker ? t('workerBanner') : t('subtitle')))),
         h('div', { className: 'sa-top-meta' },
           h(UsageWidget, { t, usage, now }),
@@ -1305,6 +1699,147 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', className: 'sa-icon-button sa-rail-toggle', title: railOpen ? t('hideHistory') : t('showHistory'), onClick: onToggleRail, 'aria-label': railOpen ? t('hideHistory') : t('showHistory') },
             h('svg', { width: 17, height: 17, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' },
               h('path', { d: 'M4 6h16M4 12h16M4 18h16' })))))
+    }
+
+    /** Tags plus inline add/remove controls for the selected worker. */
+    function WorkerTagsBar({ t, worker, onSave }) {
+      const tags = normalizeTagList(worker && worker.tags)
+      const [draft, setDraft] = React.useState('')
+      const [busy, setBusy] = React.useState(false)
+      const [error, setError] = React.useState('')
+      const commit = async (next) => {
+        setBusy(true)
+        setError('')
+        try {
+          await onSave(normalizeTagList(next))
+        } catch (failure) {
+          setError(failure instanceof Error ? failure.message : String(failure))
+        } finally {
+          setBusy(false)
+        }
+      }
+      const add = () => {
+        const incoming = normalizeTagList(String(draft || '').split(','))
+        if (incoming.length === 0) { setDraft(''); return }
+        const next = normalizeTagList([...tags, ...incoming])
+        if (next.length === tags.length) {
+          setError(t('tagLimit', { count: MAX_WORKER_TAGS }))
+          return
+        }
+        setDraft('')
+        commit(next)
+      }
+      const remove = (tag) => commit(tags.filter((value) => value !== tag))
+      return h('div', { className: 'sa-worker-tags-bar', 'data-sa-worker-tags': worker.id },
+        h('span', { className: 'sa-tags-label' }, t('workerTags')),
+        tags.length === 0 && h('span', { className: 'sa-tags-empty' }, t('tagsEmpty')),
+        tags.map((tag) => h('span', {
+          key: tag, className: 'sa-tag-chip', style: tagStyle(tag), title: tag,
+        },
+        h('span', { className: 'sa-tag-swatch' }),
+        h('span', { className: 'sa-tag-label' }, tag),
+        h('button', {
+          type: 'button',
+          className: 'sa-tag-remove',
+          title: t('removeTag'),
+          'aria-label': `${t('removeTag')}: ${tag}`,
+          disabled: busy,
+          onClick: () => remove(tag),
+        }, '×'))),
+        h('span', { className: 'sa-tag-add' },
+          h('input', {
+            value: draft,
+            placeholder: t('tagPlaceholder'),
+            'aria-label': t('workerTags'),
+            disabled: busy,
+            onChange: (event) => setDraft(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter') { event.preventDefault(); add() }
+              else if (event.key === 'Escape') setDraft('')
+            },
+          }),
+          h('button', { type: 'button', disabled: busy || draft.trim().length === 0, onClick: add }, t('addTag'))),
+        error && h('span', { className: 'sa-tags-error' }, error),
+        tags.length >= MAX_WORKER_TAGS && h('span', { className: 'sa-tags-hint' }, t('tagLimit', { count: MAX_WORKER_TAGS })))
+    }
+
+    /** Multi-select tag filter with an active indicator and a clear action. */
+    function TagFilterBar({ t, tags, active, onToggle, onClear, shown, total }) {
+      const index = Array.isArray(tags) ? tags : []
+      const selected = normalizeTagList(active, { limit: TAG_FILTER_LIMIT })
+      if (index.length === 0 && selected.length === 0) return null
+      const isSelected = (tag) => selected.some((value) => value.toLocaleLowerCase() === tag.toLocaleLowerCase())
+      return h('div', { className: 'sa-tag-filter', 'data-sa-tag-filter': '1' },
+        h('div', { className: 'sa-tag-filter-head' },
+          h('span', { className: 'sa-tag-filter-title' }, t('tagFilter')),
+          selected.length > 0 && h('span', { className: 'sa-tag-filter-active', 'data-sa-filter-active': String(selected.length) }, t('tagFilterActive', { count: selected.length })),
+          selected.length > 0 && h('button', { type: 'button', className: 'sa-tag-filter-clear', onClick: onClear }, t('tagFilterClear'))),
+        h('div', { className: 'sa-tag-filter-chips' },
+          index.map(({ tag, count }) => h('button', {
+            key: tag,
+            type: 'button',
+            className: 'sa-tag-filter-chip',
+            style: tagStyle(tag),
+            'aria-pressed': isSelected(tag) ? 'true' : 'false',
+            title: tag,
+            onClick: () => onToggle(tag),
+          },
+          h('span', { className: 'sa-tag-swatch' }),
+          h('span', { className: 'sa-tag-label' }, tag),
+          h('span', { className: 'sa-tag-filter-count' }, String(count))))),
+        selected.length > 0 && h('div', { className: 'sa-tag-filter-hint' },
+          t('tagFilterHint'),
+          typeof shown === 'number' && typeof total === 'number' ? ` ${t('tagFilterWorkers', { shown, total })}` : ''))
+    }
+
+    /** Colour legend for the turn rail while a tag filter is active. */
+    function TurnTagLegend({ t, tags, onClear }) {
+      const selected = normalizeTagList(tags, { limit: TAG_FILTER_LIMIT })
+      if (selected.length === 0) return null
+      return h('div', { className: 'sa-turn-legend', 'data-sa-turn-legend': '1' },
+        h('span', { className: 'sa-turn-legend-title' }, t('turnTagLegend')),
+        selected.map((tag) => h('span', { key: tag, className: 'sa-tag-chip', style: tagStyle(tag), title: tag },
+          h('span', { className: 'sa-tag-swatch' }),
+          h('span', { className: 'sa-tag-label' }, tag))),
+        onClear && h('button', { type: 'button', className: 'sa-turn-legend-clear', onClick: onClear }, t('tagFilterClear')))
+    }
+
+    /**
+     * Decorate the stock turn rail in place. React owns the buttons, so this
+     * writes only data attributes/CSS variables and observes child insertion;
+     * clicks, focus, intersection, and virtualization behavior stay untouched.
+     */
+    function TurnTagRail({ rootRef, turnTags, t }) {
+      React.useEffect(() => {
+        const root = rootRef && rootRef.current
+        if (!root) return undefined
+        if (typeof MutationObserver === 'undefined') {
+          decorateTurnMarks(root, turnTags, t)
+          return undefined
+        }
+        let cancelled = false
+        let frame
+        const run = () => {
+          frame = undefined
+          if (!cancelled) decorateTurnMarks(root, turnTags, t)
+        }
+        const schedule = () => {
+          if (cancelled || frame !== undefined) return
+          frame = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : setTimeout(run, 0)
+        }
+        schedule()
+        const observer = new MutationObserver(schedule)
+        observer.observe(root, { childList: true, subtree: true })
+        return () => {
+          cancelled = true
+          observer.disconnect()
+          if (frame !== undefined) {
+            if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
+            else clearTimeout(frame)
+          }
+        }
+      }, [rootRef, turnTags, t])
+      return null
     }
 
     const ReactComponent = React.Component || class {}
@@ -1603,6 +2138,12 @@ window.__ModuleLoader__.load({
           h('span', null, basename(item.workspacePath) || t('workspaceFallback')),
           h('span', null, '·'),
           h('span', null, relativeTime(item.updatedAt, t, now))),
+        normalizeTagList(item.tags).length > 0 && h('span', { className: 'sa-item-tags' },
+          normalizeTagList(item.tags).map((tag) => h('span', {
+            key: tag, className: 'sa-tag-chip', style: tagStyle(tag), title: tag,
+          },
+          h('span', { className: 'sa-tag-swatch' }),
+          h('span', { className: 'sa-tag-label' }, tag)))),
         item.lastMessage && h('span', { className: 'sa-item-message' }, item.lastMessage)))
     }
 
@@ -1630,9 +2171,16 @@ window.__ModuleLoader__.load({
     function HistoryRail({
       t, data, selectedId, now, onSelect, onNew, onRefresh, onClose,
       expanded = {}, onToggleSection = () => {}, pending = [], pendingExpandedId, onOpenPending,
+      filterTags = [], onToggleTag = () => {}, onClearFilter = () => {},
     }) {
       const conversations = data ? data.conversations : []
-      const { groups, orphans } = groupConversations(conversations)
+      const activeFilter = normalizeTagList(filterTags, { limit: TAG_FILTER_LIMIT })
+      const tagIndex = workerTagIndex(conversations)
+      const allWorkers = conversations.filter((item) => item.kind === 'worker')
+      const matchedWorkers = filterWorkers(allWorkers, activeFilter)
+      const { groups, orphans } = groupConversations(conversations, activeFilter)
+      const visibleCount = conversations.filter((item) => item.kind === 'super').length + matchedWorkers.length
+      const noTagMatches = activeFilter.length > 0 && matchedWorkers.length === 0
       const pendingItems = unresolvedPending(pending)
       const conversationsOpen = expanded.conversations !== false
       const pendingOpen = expanded.pending !== false
@@ -1650,10 +2198,22 @@ window.__ModuleLoader__.load({
             'data-rail-section': 'conversations',
           },
           h(RailSectionHead, {
-            t, section: 'conversations', title: t('conversations'), count: conversations.length,
+            t, section: 'conversations', title: t('conversations'), count: visibleCount,
             expanded: conversationsOpen, onToggle: onToggleSection,
           }),
           conversationsOpen && h('div', { className: 'sa-rail-section-list' },
+            h(TagFilterBar, {
+              t,
+              tags: tagIndex,
+              active: activeFilter,
+              onToggle: onToggleTag,
+              onClear: onClearFilter,
+              shown: matchedWorkers.length,
+              total: allWorkers.length,
+            }),
+            noTagMatches && h('div', { className: 'sa-tag-filter-empty', 'data-sa-tag-empty': '1' },
+              h('div', null, t('noWorkersWithTags')),
+              h('button', { type: 'button', className: 'sa-button', onClick: onClearFilter }, t('tagFilterClear'))),
             conversations.length === 0 && h('div', { className: 'sa-rail-empty' }, t('emptyHistory')),
             groups.map((group) => h('div', { className: 'sa-group', key: group.parent.id },
               h(HistoryItem, { t, item: group.parent, selected: group.parent.id === selectedId, now, onSelect }),
@@ -1734,6 +2294,7 @@ window.__ModuleLoader__.load({
       const catalog = useCatalog()
       const usage = useUsage(ctx)
       const now = useNow()
+      const rootRef = React.useRef(null)
       const [selectedId, setSelectedId] = React.useState(() => {
         try { return window.localStorage.getItem(SELECTED_KEY) || '' } catch { return '' }
       })
@@ -1746,6 +2307,7 @@ window.__ModuleLoader__.load({
       }))
       const [expandedPendingId, setExpandedPendingId] = React.useState('')
       const [answeredPending, setAnsweredPending] = React.useState({})
+      const [tagFilter, setTagFilter] = React.useState(() => readTagFilter(window.localStorage))
       const [newOpen, setNewOpen] = React.useState(false)
       const [notice, setNotice] = React.useState('')
       const data = catalog.data
@@ -1754,6 +2316,19 @@ window.__ModuleLoader__.load({
       const selected = conversations.find((item) => item.id === selectedId) || null
       const chat = useSessionChat(ctx, selected ? selected.sessionId : undefined)
       const statusLabel = statusOf(selected ? selected.status : 'idle')
+      const selectedWorkers = selected && selected.kind === 'super'
+        ? conversations.filter((item) => item.kind === 'worker' && item.parentId === selected.id)
+        : []
+      const stats = selected && selected.kind === 'super' ? workerStats(selectedWorkers) : undefined
+      const workerTagsSignature = React.useMemo(() => conversations
+        .filter((item) => item && item.kind === 'worker')
+        .map((item) => `${item.id}:${normalizeTagList(item.tags).join(',')}`)
+        .join('|'), [conversations])
+      const chatEntries = chat.binding ? chat.binding.eventSource.getSnapshot().entries : []
+      const turnTags = React.useMemo(
+        () => turnTagMap(chatEntries, conversations.filter((item) => item && item.kind === 'worker')),
+        [chat.revision, chat.status, selectedId, workerTagsSignature],
+      )
       const surface = selectConversationSurface({
         flag: stockChat,
         status: chat.status,
@@ -1816,6 +2391,30 @@ window.__ModuleLoader__.load({
         return resolved
       }
       const dismissPending = () => setExpandedPendingId('')
+      const toggleTagFilter = (tag) => {
+        const normalized = normalizeTagList([tag], { limit: 1 })[0]
+        if (!normalized) return
+        setTagFilter((current) => {
+          const key = normalized.toLocaleLowerCase()
+          const exists = current.some((value) => value.toLocaleLowerCase() === key)
+          const next = normalizeTagList(exists ? current.filter((value) => value.toLocaleLowerCase() !== key) : [...current, normalized], { limit: TAG_FILTER_LIMIT })
+          writeTagFilter(window.localStorage, next)
+          return next
+        })
+      }
+      const clearTagFilter = () => {
+        setTagFilter([])
+        writeTagFilter(window.localStorage, [])
+      }
+      const saveWorkerTags = async (worker, tags) => {
+        try {
+          await api(`/workers/${encodeURIComponent(worker.id)}/tags`, { method: 'POST', body: { tags } })
+          await catalog.reload()
+        } catch (failure) {
+          setNotice(`${t('tagSaveFailed')}: ${failure instanceof Error ? failure.message : String(failure)}`)
+          throw failure
+        }
+      }
       const openInDsh = async (id) => {
         try {
           const list = ctx.sessions.list.getSnapshot()
@@ -1878,7 +2477,7 @@ window.__ModuleLoader__.load({
         })
         : null
 
-      return h('div', { className: 'sa-root' },
+      return h('div', { className: 'sa-root', ref: rootRef },
         h('style', null, CSS),
         h(Header, {
           t,
@@ -1886,28 +2485,39 @@ window.__ModuleLoader__.load({
           statusLabel,
           usage,
           now,
+          stats,
           railOpen,
           onNew: () => setNewOpen(true),
           onToggleRail: toggleRail,
           onOpenInDsh: () => { if (selected) openInDsh(selected.sessionId) },
           onBack: backToSuper,
         }),
+        selected && selected.kind === 'worker' && h(WorkerTagsBar, {
+          t,
+          worker: selected,
+          onSave: (tags) => saveWorkerTags(selected, tags),
+        }),
         notice && h('div', { className: 'sa-error', style: { padding: '8px 18px 0' } }, notice),
         h('div', { className: 'sa-body' },
           h('main', { className: 'sa-main' },
             pendingCard && h('div', { className: 'sa-pending-inline' }, pendingCard),
+            surface === SURFACE_STOCK && h(TurnTagLegend, { t, tags: tagFilter, onClear: clearTagFilter }),
             catalog.status === 'loading' && !data
               ? h('div', { className: 'sa-empty' }, h('p', null, t('loading')))
               : catalog.status === 'error' && !data
                 ? h('div', { className: 'sa-empty' }, h('h2', null, t('loadFailed')), h('p', { className: 'sa-error' }, String(catalog.error && catalog.error.message || '')),
                   h('button', { type: 'button', className: 'sa-button primary', onClick: () => { catalog.bootstrap().catch(() => {}) } }, t('retry')))
-                : center),
+                : center,
+            h(TurnTagRail, { rootRef, turnTags, t })),
           railOpen && h(HistoryRail, {
             t,
             data,
             selectedId,
             now,
             pending,
+            filterTags: tagFilter,
+            onToggleTag: toggleTagFilter,
+            onClearFilter: clearTagFilter,
             pendingExpandedId: expandedPendingId,
             onOpenPending: openPending,
             expanded: railSections,
@@ -1976,6 +2586,21 @@ window.__ModuleLoader__.load({
         resolveStockChatFlag,
         selectConversationSurface,
         workerActivity,
+        normalizeTagList,
+        stableHash,
+        tagHue,
+        tagStyle,
+        isWorkerRunning,
+        workerStats,
+        workerTagIndex,
+        filterWorkers,
+        readTagFilter,
+        writeTagFilter,
+        turnWorkerIds,
+        turnTagMap,
+        turnFromLabel,
+        markerPresentation,
+        decorateTurnMarks,
         clipText,
         unresolvedPending,
         answeredCardAfterDismiss,
@@ -1992,12 +2617,23 @@ window.__ModuleLoader__.load({
         usageBreakdown,
         usageRequestPath,
         UsageWidget,
+        Header,
+        WorkerTagsBar,
+        TagFilterBar,
+        TurnTagLegend,
+        TurnTagRail,
         HistoryRail,
+        HistoryItem,
         PendingDecisionItem,
         PendingQuestionCard,
         EmbeddedConversation,
         RAIL_VISIBLE_KEY,
         RAIL_SECTION_KEYS,
+        TAG_FILTER_KEY,
+        TAG_HUES,
+        MAX_WORKER_TAGS,
+        MAX_TAG_CHARS,
+        TAG_FILTER_LIMIT,
         PENDING_ANSWER_DISMISS_MS,
         SURFACE_STOCK,
         SURFACE_CUSTOM,

@@ -321,3 +321,68 @@ test('the serialized usage response never contains key secrets', async () => {
   assert.match(text, /DeepSeek Harness/)
   assert.match(text, /1\.25/)
 })
+
+
+test('worker tag routes persist set/add/remove and expose the many-to-many index', async () => {
+  const { api, orchestrator } = await setup()
+  const boot = await api.request({ method: 'POST', pathname: '/superagent/api/bootstrap', headers })
+  const superId = boot.body.activeConversationId
+  const first = await orchestrator.dispatchTask({ parentId: superId, title: 'Quant worker', prompt: 'Do quant work.' })
+  const second = await orchestrator.dispatchTask({ parentId: superId, title: 'Infra worker', prompt: 'Do infra work.' })
+
+  const set = await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/workers/${first.id}/tags`,
+    headers,
+    body: { tags: [' quant ', 'DSH', 'quant'] },
+  })
+  assert.equal(set.status, 200)
+  assert.deepEqual(set.body.worker.tags, ['quant', 'DSH'])
+
+  const added = await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/workers/${first.id}/tags`,
+    headers,
+    body: { action: 'add', tags: ['infra'] },
+  })
+  assert.deepEqual(added.body.worker.tags, ['quant', 'DSH', 'infra'])
+  await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/workers/${second.id}/tags`,
+    headers,
+    body: { tags: ['quant', 'infra'] },
+  })
+
+  const one = await api.request({ method: 'GET', pathname: `/superagent/api/workers/${first.id}/tags`, headers })
+  assert.equal(one.status, 200)
+  assert.deepEqual(one.body.tags, ['quant', 'DSH', 'infra'])
+
+  const index = await api.request({ method: 'GET', pathname: '/superagent/api/tags', headers })
+  assert.equal(index.status, 200)
+  const quant = index.body.tags.find((entry) => entry.tag === 'quant')
+  assert.deepEqual(quant.workerIds.sort(), [first.id, second.id].sort())
+  assert.equal(quant.count, 2)
+
+  const state = await api.request({ method: 'GET', pathname: '/superagent/api/state', headers })
+  assert.deepEqual(state.body.conversations.find((worker) => worker.id === second.id).tags, ['quant', 'infra'])
+
+  const removed = await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/workers/${second.id}/tags`,
+    headers,
+    body: { action: 'remove', tags: ['quant'] },
+  })
+  assert.deepEqual(removed.body.worker.tags, ['infra'])
+
+  const missing = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/workers/missing/tags',
+    headers,
+    body: { tags: ['x'] },
+  })
+  assert.equal(missing.status, 404)
+  assert.match(missing.body.error, /Unknown worker/)
+
+  const unauthorized = await api.request({ method: 'GET', pathname: '/superagent/api/tags', headers: {} })
+  assert.equal(unauthorized.status, 403)
+})

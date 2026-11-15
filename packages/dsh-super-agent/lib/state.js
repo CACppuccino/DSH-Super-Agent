@@ -10,6 +10,8 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 export const STATE_VERSION = 1
+export const MAX_WORKER_TAGS = 8
+export const MAX_TAG_CHARS = 24
 const PROGRESS_LIMIT = 80
 
 /** An empty, valid state document. */
@@ -19,6 +21,31 @@ export function emptyState() {
 
 /** True when `value` is a non-array object. */
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+/**
+ * Normalize a worker's free-form tag list.
+ *
+ * Tags are short labels: trim outer whitespace, collapse internal runs, drop
+ * a leading `#`, dedupe case-insensitively while keeping the first spelling,
+ * and bound both the number of tags and each tag's length. Invalid entries are
+ * ignored rather than failing the whole edit.
+ */
+export function normalizeTags(value, { limit = MAX_WORKER_TAGS, maxLength = MAX_TAG_CHARS } = {}) {
+  if (!Array.isArray(value)) return []
+  const seen = new Set()
+  const tags = []
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue
+    const tag = entry.trim().replace(/^#+/, '').replace(/\s+/g, ' ').slice(0, maxLength).trim()
+    if (tag.length === 0) continue
+    const key = tag.toLocaleLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    tags.push(tag)
+    if (tags.length >= limit) break
+  }
+  return tags
+}
 
 /** Coerce a finite timestamp; missing or invalid values become `fallback`. */
 function timeOf(value, fallback = 0) {
@@ -50,6 +77,7 @@ function normalizeConversation(value) {
     status: typeof value.status === 'string' ? value.status : 'idle',
     lastMessage: typeof value.lastMessage === 'string' ? value.lastMessage : '',
     lastOutput: typeof value.lastOutput === 'string' ? value.lastOutput : '',
+    tags: normalizeTags(value.tags),
     turnReportedDone: value.turnReportedDone === true,
     progress,
   }

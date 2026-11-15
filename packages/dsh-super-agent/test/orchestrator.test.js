@@ -56,6 +56,7 @@ test('bootstrap creates a Super Agent conversation, workspace, prompt, and tools
     'superagent_send_message',
     'superagent_stop_worker',
     'superagent_worker_output',
+    'superagent_worker_tags',
   ])
   const dispatch = superAgent.tools.get('superagent_dispatch_task')
   assert.equal(dispatch.output.schema.type, 'object')
@@ -477,4 +478,59 @@ test('dispose releases the prompt and tool bindings added to live agents', async
   assert.deepEqual(superAgent.restrictions, [])
   orchestrator.onAgentDisposed(superAgent)
   assert.equal(orchestrator.bindings.size, 0)
+})
+
+
+test('worker tags are many-to-many, normalized, persisted, and exposed by the tool', async () => {
+  const { orchestrator, host, store, superAgent, stateDir } = await bootstrapped()
+  const dispatch = superAgent.tools.get('superagent_dispatch_task')
+  const first = await dispatch.execute({ title: 'Quant audit', prompt: 'Audit quant.' }, { agent: superAgent, signal: new AbortController().signal })
+  const second = await dispatch.execute({ title: 'Infra fix', prompt: 'Fix infra.' }, { agent: superAgent, signal: new AbortController().signal })
+
+  const tagsTool = superAgent.tools.get('superagent_worker_tags')
+  assert.ok(tagsTool, 'the worker tags tool is registered')
+  assert.deepEqual(tagsTool.parameters.properties.action.enum, ['set', 'add', 'remove', 'list'])
+
+  const setFirst = await tagsTool.execute({
+    action: 'set',
+    worker_id: first.id,
+    tags: [' quant ', 'DSH', 'quant', ''],
+  }, { agent: superAgent })
+  assert.deepEqual(setFirst.worker.tags, ['quant', 'DSH'])
+  await tagsTool.execute({ action: 'set', worker_id: second.id, tags: ['quant', 'infra'] }, { agent: superAgent })
+
+  const listed = await tagsTool.execute({ action: 'list' }, { agent: superAgent })
+  assert.deepEqual(listed.tags.map((entry) => [entry.tag, entry.count]), [['DSH', 1], ['infra', 1], ['quant', 2]])
+  assert.deepEqual(listed.tags.find((entry) => entry.tag === 'quant').workerIds.sort(), [first.id, second.id].sort())
+  assert.deepEqual(listed.workers.find((worker) => worker.id === first.id).tags, ['quant', 'DSH'])
+
+  const one = await tagsTool.execute({ action: 'list', worker_id: second.id }, { agent: superAgent })
+  assert.equal(one.worker.id, second.id)
+  assert.deepEqual(one.tags, ['quant', 'infra'])
+
+  const added = await tagsTool.execute({ action: 'add', worker_id: first.id, tags: ['infra', 'quant'] }, { agent: superAgent })
+  assert.deepEqual(added.worker.tags, ['quant', 'DSH', 'infra'])
+  const removed = await tagsTool.execute({ action: 'remove', worker_id: second.id, tags: ['QUANT'] }, { agent: superAgent })
+  assert.deepEqual(removed.worker.tags, ['infra'])
+  await assert.rejects(
+    () => tagsTool.execute({ action: 'explode', worker_id: first.id }, { agent: superAgent }),
+    /action must be set, add, remove, or list/,
+  )
+  await assert.rejects(
+    () => tagsTool.execute({ action: 'set', worker_id: 'missing', tags: ['x'] }, { agent: superAgent }),
+    /Unknown worker/,
+  )
+
+  // The state view carries tags for the panel and the catalog survives a reload.
+  assert.deepEqual(orchestrator.state().conversations.find((worker) => worker.id === first.id).tags, ['quant', 'DSH', 'infra'])
+  const reloaded = new Orchestrator({ ctx: host, store: new StateStore(join(stateDir, 'state.json')), stateDir })
+  await reloaded.load()
+  assert.deepEqual(reloaded.listWorkerTags().tags.find((entry) => entry.tag === 'infra').workerIds.sort(), [first.id, second.id].sort())
+  assert.deepEqual(reloaded.state().conversations.find((worker) => worker.id === second.id).tags, ['infra'])
+  assert.ok(store.conversation(first.id))
+})
+
+test('the Super Agent prompt tells the model how to use worker tags', () => {
+  assert.match(SUPER_PROMPT, /superagent_worker_tags/)
+  assert.match(SUPER_PROMPT, /short tags/i)
 })

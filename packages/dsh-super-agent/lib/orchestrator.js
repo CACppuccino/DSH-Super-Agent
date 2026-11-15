@@ -12,6 +12,7 @@ import { mkdir } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { PendingStore } from './pending.js'
+import { MAX_TAG_CHARS, MAX_WORKER_TAGS, normalizeTags } from './state.js'
 
 export const PLUGIN_NAME = 'dsh-super-agent'
 const PROGRESS_LIMIT = 80
@@ -27,6 +28,7 @@ Tools:
 - superagent_send_message: send a follow-up to an existing worker.
 - superagent_list_workers: list workers and their live status.
 - superagent_worker_output: read a worker's latest output and recent progress.
+- superagent_worker_tags: set, add, remove, or list short tags on workers (up to ${MAX_WORKER_TAGS} per worker). Tags persist and help the user group and filter related work.
 - superagent_stop_worker: stop a worker that is no longer needed.
 - superagent_create_workspace: create a workspace without starting a worker.
 - superagent_create_conversation: open another Super Agent conversation for a separate long-running thread.
@@ -47,7 +49,8 @@ Working rules:
 9. A worker is a persistent conversation, not a subagent. It can receive multiple assignments.
 10. Do not create a new Super Agent conversation unless the user asks for a separate thread or the work is clearly unrelated and long-running.
 11. Delegation always goes through superagent_dispatch_task. One-shot subagent, workflow, teammate, and team-task tools are unavailable; those bypass the persistent worker conversation that this panel tracks.
-12. You do not have an ask_user_question tool and its built-in cards are unavailable. When the user must choose, call superagent_pending_decision with action "create" plus the question, optional context, and options. Do not just write the question and any options as text and stop: the pending decision card is the interactive path, and the user's answer arrives as a user message in this conversation.`
+12. You do not have an ask_user_question tool and its built-in cards are unavailable. When the user must choose, call superagent_pending_decision with action "create" plus the question, optional context, and options. Do not just write the question and any options as text and stop: the pending decision card is the interactive path, and the user's answer arrives as a user message in this conversation.
+13. Use superagent_worker_tags to keep related workers organized when the user names a project, theme, or workstream. Tags are short (for example "quant", "dsh", "infra"); set or replace with action "set", append with "add", and list the current assignments with "list". The user can also edit them in the panel, and filters apply to the conversation list.`
 
 /** The fixed system prompt for worker conversations. */
 export const WORKER_PROMPT = `You are a worker agent launched by the Super Agent.
@@ -252,6 +255,25 @@ const WORKER_OUTPUT_SCHEMA = {
   required: ['worker_id'],
 }
 
+const WORKER_TAGS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    action: {
+      type: 'string',
+      enum: ['set', 'add', 'remove', 'list'],
+      description: 'set replaces a worker\'s tags; add appends; remove deletes the listed tags; list returns assignments without changing them.',
+    },
+    worker_id: { type: 'string', description: 'Worker id returned by superagent_dispatch_task or superagent_list_workers. Required for set, add, and remove; optional for list.' },
+    tags: {
+      type: 'array',
+      items: { type: 'string' },
+      description: `Short free-form labels. Trimmed and deduped case-insensitively; at most ${MAX_WORKER_TAGS} per worker and ${MAX_TAG_CHARS} characters each.`,
+    },
+  },
+  required: ['action'],
+}
+
 const REPORT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -405,6 +427,7 @@ export class Orchestrator {
       updatedAt: record.updatedAt,
       lastMessage: record.lastMessage,
       lastOutput: record.lastOutput,
+      tags: Array.isArray(record.tags) ? record.tags.slice() : [],
       progress: record.progress.slice(-3),
     }
   }
@@ -550,6 +573,7 @@ export class Orchestrator {
       status: 'idle',
       lastMessage: '',
       lastOutput: '',
+      tags: [],
       turnReportedDone: false,
       progress: [],
     }
@@ -597,6 +621,7 @@ export class Orchestrator {
       status: 'dispatching',
       lastMessage: '',
       lastOutput: '',
+      tags: [],
       turnReportedDone: false,
       progress: [],
     }
@@ -719,6 +744,75 @@ export class Orchestrator {
       .filter((conversation) => !status || this.view(conversation).status === status)
       .map((conversation) => this.view(conversation))
     return { workers }
+  }
+
+  /**
+   * The many-to-many tag index: one entry per tag with the workers carrying it.
+   * Tags are case-insensitive keys; the first spelling encountered wins.
+   */
+  workerTagIndex() {
+    const byTag = new Map()
+    for (const record of this.store.conversations()) {
+      if (record.kind !== 'worker') continue
+      for (const tag of normalizeTags(record.tags)) {
+        const key = tag.toLocaleLowerCase()
+        const entry = byTag.get(key) || { tag, workerIds: [] }
+        if (!entry.workerIds.includes(record.id)) entry.workerIds.push(record.id)
+        byTag.set(key, entry)
+      }
+    }
+    return [...byTag.values()]
+      .sort((left, right) => left.tag.localeCompare(right.tag))
+      .map((entry) => ({ tag: entry.tag, workerIds: entry.workerIds, count: entry.workerIds.length }))
+  }
+
+  /** Worker tag assignments, all workers or one worker. */
+  listWorkerTags({ workerId } = {}) {
+    if (typeof workerId === 'string' && workerId.trim().length > 0) {
+      const worker = this.requireWorker(workerId.trim())
+      return { ok: true, worker: this.view(worker), tags: normalizeTags(worker.tags) }
+    }
+    const workers = this.store.conversations()
+      .filter((record) => record.kind === 'worker')
+      .map((record) => this.view(record))
+    return { ok: true, workers, tags: this.workerTagIndex() }
+  }
+
+  /**
+   * Set, add, or remove tags on one worker. The list is normalized and bounded
+   * before it is persisted; editing tags leaves the worker's sort timestamp
+   * alone so the history rail does not jump while the user edits.
+   */
+  async setWorkerTags({ workerId, tags, action = 'set' } = {}) {
+    const worker = this.requireWorker(requireString(workerId, 'worker_id'))
+    const requested = normalizeTags(tags)
+    const current = normalizeTags(worker.tags)
+    let next
+    if (action === 'set') {
+      next = requested
+    } else if (action === 'add') {
+      next = normalizeTags([...current, ...requested])
+    } else if (action === 'remove') {
+      const removing = new Set(requested.map((tag) => tag.toLocaleLowerCase()))
+      next = current.filter((tag) => !removing.has(tag.toLocaleLowerCase()))
+    } else {
+      throw new Error('action must be set, add, remove, or list')
+    }
+    await this.store.update((state) => {
+      const stored = state.conversations[worker.id]
+      if (stored) stored.tags = next.slice()
+    })
+    return { ok: true, worker: this.view(this.store.conversation(worker.id)) }
+  }
+
+  /** The `superagent_worker_tags` tool implementation. */
+  async workerTags({ workerId, action = 'list', tags } = {}) {
+    const name = typeof action === 'string' ? action.trim() : 'list'
+    if (name === 'list') return this.listWorkerTags({ workerId })
+    if (name === 'set' || name === 'add' || name === 'remove') {
+      return this.setWorkerTags({ workerId, tags, action: name })
+    }
+    throw new Error('action must be set, add, remove, or list')
   }
 
   /** List every conversation in the catalog. */
@@ -1014,6 +1108,14 @@ export class Orchestrator {
         'Read one worker\'s latest output and recent progress notices. Use this when a notice is too short or you need detail before answering the user.',
         WORKER_OUTPUT_SCHEMA,
         async (args) => orchestrator.workerOutput({ workerId: requireString(args.worker_id, 'worker_id'), limit: args.limit })),
+      tool('superagent_worker_tags',
+        `Organize workers with short persistent tags (at most ${MAX_WORKER_TAGS} per worker). Action "set" replaces a worker's tags, "add" appends, "remove" deletes the listed tags, and "list" returns current assignments as a tag-to-worker index.`,
+        WORKER_TAGS_SCHEMA,
+        async (args) => orchestrator.workerTags({
+          workerId: args.worker_id,
+          action: typeof args.action === 'string' ? args.action : 'list',
+          tags: args.tags,
+        })),
       tool('superagent_send_message',
         'Send a follow-up instruction or answer to an existing worker conversation.',
         SEND_MESSAGE_SCHEMA,

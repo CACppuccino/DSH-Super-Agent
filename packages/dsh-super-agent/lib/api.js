@@ -92,6 +92,9 @@ export function createApi({ orchestrator, origin, billing }) {
           answer: input.answer,
         }))
       }
+      if (upper === 'GET' && parts.length === 1 && parts[0] === 'tags') {
+        return result(200, orchestrator.listWorkerTags())
+      }
       if (upper === 'GET' && parts.length === 1 && parts[0] === 'usage') {
         const locale = typeof query.locale === 'string' && /^[A-Za-z_-]{2,16}$/.test(query.locale) ? query.locale : 'en'
         const offset = Number(query.tz)
@@ -135,6 +138,17 @@ export function createApi({ orchestrator, origin, billing }) {
           const input = objectBody(body)
           const worker = await orchestrator.stopWorker({ workerId, reason: typeof input.reason === 'string' ? input.reason : undefined })
           return result(200, { worker })
+        }
+        if (upper === 'GET' && action === 'tags') {
+          return result(200, orchestrator.listWorkerTags({ workerId }))
+        }
+        if (upper === 'POST' && action === 'tags') {
+          const input = objectBody(body)
+          return result(200, await orchestrator.setWorkerTags({
+            workerId,
+            tags: input.tags,
+            action: typeof input.action === 'string' ? input.action : 'set',
+          }))
         }
       }
       if (upper === 'POST' && parts.length === 3 && parts[0] === 'conversations' && parts[2] === 'stop') {
