@@ -86,11 +86,16 @@ function normalizeConversation(value) {
 /** Keep only the workspace fields the UI needs. */
 function normalizeWorkspace(value) {
   if (!isRecord(value) || typeof value.id !== 'string' || typeof value.path !== 'string') return undefined
+  const createdAt = timeOf(value.createdAt, Date.now())
+  const retired = value.retired === true
   return {
     id: value.id,
     path: value.path,
     title: typeof value.title === 'string' && value.title.trim() ? value.title.trim() : value.path,
-    createdAt: timeOf(value.createdAt, Date.now()),
+    createdAt,
+    retired,
+    retiredAt: retired ? timeOf(value.retiredAt, createdAt) : null,
+    retiredReason: retired && typeof value.retiredReason === 'string' ? value.retiredReason.trim() : '',
   }
 }
 

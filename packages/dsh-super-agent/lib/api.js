@@ -101,6 +101,28 @@ export function createApi({ orchestrator, origin, billing }) {
           title: typeof query.title === 'string' ? query.title : undefined,
         }))
       }
+      if (upper === 'POST' && parts.length === 2 && parts[0] === 'workspaces' && parts[1] === 'retire') {
+        const input = objectBody(body)
+        return result(200, {
+          ok: true,
+          workspace: await orchestrator.retireWorkspace({
+            workspaceId: typeof input.workspaceId === 'string' ? input.workspaceId : input.workspace_id,
+            reason: typeof input.reason === 'string' ? input.reason : undefined,
+          }),
+        })
+      }
+      if (upper === 'POST' && parts.length === 2 && parts[0] === 'workspaces' && parts[1] === 'reactivate') {
+        const input = objectBody(body)
+        return result(200, {
+          ok: true,
+          workspace: await orchestrator.reactivateWorkspace({
+            workspaceId: typeof input.workspaceId === 'string' ? input.workspaceId : input.workspace_id,
+          }),
+        })
+      }
+      if (upper === 'GET' && parts.length === 2 && parts[0] === 'workspaces') {
+        return result(200, { ok: true, workspace: orchestrator.workspaceDetail(decodeURIComponent(parts[1])) })
+      }
       if (upper === 'GET' && parts.length === 1 && parts[0] === 'themes') {
         return result(200, { ok: true, themes: orchestrator.listThemes() })
       }

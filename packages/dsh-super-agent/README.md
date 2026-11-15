@@ -55,7 +55,9 @@ Every dispatch is classified into a **theme** (for example `quant-research`, `ds
 - an unknown theme, or a theme without a workspace, refuses to create a directory unless `new_workspace` or `justification` is supplied; the new workspace is then registered under the theme;
 - every dispatch result surfaces `theme`, `workspace_created`, and `workspace_reused`, so the Super Agent can tell the user, and no workspace is created silently.
 
-`superagent_workspaces` is the discovery surface: `list` inventories every SA workspace (worker counts, live/idle/stopped breakdown, last activity, directory emptiness, proposed theme groups), `themes` lists the persisted registry, `assign` maps a theme to an existing workspace, and `suggest` classifies a task description into the best theme + workspace. If `suggest` returns a proposed workspace for a known but unassigned theme, dispatch with that workspace id (or assign it first) instead of creating a new directory. Proposed groups are **hints only**; retiring or merging workspaces is a separate, dry-run consolidation step for the user to approve, and existing worker conversations are never moved.
+`superagent_workspaces` is the discovery surface: `list` inventories active SA workspaces (worker counts, live/idle/stopped breakdown, last activity, directory emptiness, proposed theme groups) and lists retired records separately, `themes` lists the persisted registry, `assign` maps a theme to an existing workspace, `suggest` classifies a task description into the best theme + workspace, and `retire` / `reactivate` toggle metadata-only retirement. If `suggest` returns a proposed workspace for a known but unassigned theme, dispatch with that workspace id (or assign it first) instead of creating a new directory.
+
+Retirement is **reversible and non-destructive**: a retired workspace disappears from the active picker/theme list but keeps its directory, files, workspace record, and every worker conversation; `reactivate` restores it. A canonical theme workspace and the protected `Super Agent` home workspace cannot be retired. Proposed consolidation groups are **hints only**, and existing worker conversations are never moved.
 
 ## Model tools
 
@@ -68,7 +70,7 @@ Super Agent sessions receive:
 | `superagent_list_workers` | List workers with live status. |
 | `superagent_worker_output` | Read a worker's latest output and recent progress. |
 | `superagent_worker_tags` | Set/add/remove short tags on a worker, or list the many-to-many tag index. |
-| `superagent_workspaces` | Inventory workspaces and proposed theme groups, list/assign the persisted theme registry, or suggest a theme for a task. |
+| `superagent_workspaces` | Inventory active/retired workspaces, list/assign the persisted theme registry, suggest a theme, or retire/reactivate a workspace (metadata only). |
 | `superagent_stop_worker` | Stop a worker's current turn. |
 | `superagent_create_workspace` | Prepare a workspace. |
 | `superagent_create_conversation` | Open another Super Agent conversation. |
@@ -113,7 +115,7 @@ The Client half uses the public Client services `sessions`, `uiWorkspace`, `slot
 node --test test/*.test.js
 ```
 
-The suite covers the state store (including tag normalization and persistence, theme registry persistence), the pending-decision store, dispatch/workspace/progress orchestration (including theme reuse, explicit new workspaces, justification enforcement, registry persistence, inventory grouping, and description-to-theme suggestion), HTTP authorization and routes (including pending create/list/resolve, worker tag set/list, workspace/theme inventory+assignment, and answer delivery), the Client's pure transcript/grouping/registration logic, worker count derivation, tag filter any-of semantics and persistence, deterministic tag colours, turn-ownership mapping and turn-rail marker decoration, rail section ordering and collapse persistence, the inline pending card, tag chips/editor, the turn legend, and the header widget's balance/usage folding, fallback, and formatting. It uses in-process fakes and temporary directories; no model or live Session is needed.
+The suite covers the state store (including tag normalization and persistence, theme registry persistence), the pending-decision store, dispatch/workspace/progress orchestration (including theme reuse, explicit new workspaces, justification enforcement, registry persistence, inventory grouping, description-to-theme suggestion, and guarded reversible retirement), HTTP authorization and routes (including pending create/list/resolve, worker tag set/list, workspace/theme inventory+assignment, and answer delivery), the Client's pure transcript/grouping/registration logic, worker count derivation, tag filter any-of semantics and persistence, deterministic tag colours, turn-ownership mapping and turn-rail marker decoration, rail section ordering and collapse persistence, the inline pending card, tag chips/editor, the turn legend, and the header widget's balance/usage folding, fallback, and formatting. It uses in-process fakes and temporary directories; no model or live Session is needed.
 
 ## 余额与 24 小时用量（标题栏状态组件）
 

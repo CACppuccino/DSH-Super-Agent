@@ -540,7 +540,7 @@ test('dispatch classifies by theme, reuses the theme workspace, and never create
   const { orchestrator, host, superAgent, stateDir } = await bootstrapped()
   const workspacesTool = superAgent.tools.get('superagent_workspaces')
   assert.ok(workspacesTool, 'the workspace discovery tool is registered')
-  assert.deepEqual(workspacesTool.parameters.properties.action.enum, ['list', 'themes', 'assign', 'suggest'])
+  assert.deepEqual(workspacesTool.parameters.properties.action.enum, ['list', 'themes', 'assign', 'suggest', 'retire', 'reactivate'])
   const dispatch = superAgent.tools.get('superagent_dispatch_task')
 
   const quant = await orchestrator.createWorkspace({ title: 'Quant Research Hub' })
@@ -708,7 +708,7 @@ test('the workspace tool inventories emptiness and groups, and suggest classifie
   )
   await assert.rejects(
     () => workspacesTool.execute({ action: 'explode' }, { agent: superAgent }),
-    /action must be list, themes, assign, or suggest/,
+    /action must be list, themes, assign, suggest, retire, or reactivate/,
   )
   assert.equal(worker.theme, 'memory')
   assert.equal(worker.workspace_created, false)
@@ -719,4 +719,99 @@ test('the Super Agent prompt teaches workspace discipline', () => {
   assert.match(SUPER_PROMPT, /superagent_workspaces/)
   assert.match(SUPER_PROMPT, /workspace_created/)
   assert.match(SUPER_PROMPT, /never create a workspace silently/i)
+})
+
+test('workspace retirement is metadata-only, guarded, and reversible', async () => {
+  const { orchestrator, host, superAgent, superConversation } = await bootstrapped()
+  const workspacesTool = superAgent.tools.get('superagent_workspaces')
+  const canonical = await orchestrator.createWorkspace({ title: 'Quant canonical' })
+  const duplicate = await orchestrator.createWorkspace({ title: 'Quant duplicate' })
+  await workspacesTool.execute({ action: 'assign', theme: 'quant-research', workspace_id: canonical.id }, { agent: superAgent })
+  const worker = await superAgent.tools.get('superagent_dispatch_task').execute({
+    title: 'Old quant task',
+    prompt: 'Do the old task.',
+    workspace: duplicate.id,
+    theme: 'quant-research',
+  }, { agent: superAgent, signal: new AbortController().signal })
+  assert.equal(worker.workspaceId, canonical.id, 'registered theme reuses the canonical workspace')
+
+  await assert.rejects(
+    () => workspacesTool.execute({ action: 'retire', workspace_id: canonical.id }, { agent: superAgent }),
+    /canonical for theme/,
+  )
+  await assert.rejects(
+    () => workspacesTool.execute({ action: 'retire', workspace_id: superConversation.workspaceId }, { agent: superAgent }),
+    /protected/,
+  )
+
+  const retired = await workspacesTool.execute({
+    action: 'retire',
+    workspace_id: duplicate.id,
+    reason: 'Duplicate of Quant canonical; consolidation approved',
+  }, { agent: superAgent })
+  assert.equal(retired.workspace.retired, true)
+  assert.equal(retired.workspace.retiredReason, 'Duplicate of Quant canonical; consolidation approved')
+  assert.equal(retired.workspace.workerCount, 0)
+
+  const list = await workspacesTool.execute({ action: 'list' }, { agent: superAgent })
+  assert.equal(list.workspaces.some((workspace) => workspace.id === duplicate.id), false)
+  assert.equal(list.workspaces.some((workspace) => workspace.id === canonical.id), true)
+  const retiredRow = list.retired.find((workspace) => workspace.id === duplicate.id)
+  assert.equal(retiredRow.retired, true)
+  assert.equal(retiredRow.retiredReason, 'Duplicate of Quant canonical; consolidation approved')
+  const groups = list.groups.find((group) => group.theme.id === 'quant-research')
+  assert.equal(groups.workspaceIds.includes(duplicate.id), false)
+
+  // Hidden from the picker, but the workspace record, registry entry, directory,
+  // and any worker conversations remain resolvable.
+  assert.equal(orchestrator.state().workspaces.some((workspace) => workspace.id === duplicate.id), false)
+  assert.equal(orchestrator.state().workspaces.some((workspace) => workspace.id === canonical.id), true)
+  assert.ok(orchestrator.store.workspace(duplicate.id))
+  assert.ok(host.workspaceRegistry.get(duplicate.id))
+  assert.equal(orchestrator.workspaceDetail(duplicate.id).retired, true)
+  assert.equal(orchestrator.workspaceDetail(duplicate.id).id, duplicate.id)
+  assert.equal(orchestrator.store.conversation(worker.id).workspaceId, canonical.id)
+
+  const reactivated = await workspacesTool.execute({ action: 'reactivate', workspace_id: duplicate.id }, { agent: superAgent })
+  assert.equal(reactivated.workspace.retired, false)
+  assert.equal(reactivated.workspace.retiredReason, '')
+  const after = await workspacesTool.execute({ action: 'list' }, { agent: superAgent })
+  assert.equal(after.workspaces.some((workspace) => workspace.id === duplicate.id), true)
+  assert.equal(after.retired.some((workspace) => workspace.id === duplicate.id), false)
+  assert.equal(orchestrator.state().workspaces.some((workspace) => workspace.id === duplicate.id), true)
+
+  await assert.rejects(
+    () => workspacesTool.execute({ action: 'retire', workspace_id: 'missing' }, { agent: superAgent }),
+    /Workspace not found/,
+  )
+})
+
+test('the approved quant-research canonical is reused by dispatch', async () => {
+  const { orchestrator, superAgent } = await bootstrapped()
+  const workspacesTool = superAgent.tools.get('superagent_workspaces')
+  const canonical = await orchestrator.createWorkspace({ title: 'qr-data-power-options' })
+  await workspacesTool.execute({
+    action: 'assign',
+    theme: 'quant-research',
+    workspace_id: canonical.id,
+    description: 'Quant strategies, research pipelines, and backtests.',
+  }, { agent: superAgent })
+  const suggestion = await workspacesTool.execute({
+    action: 'suggest',
+    description: 'Backtest a momentum strategy on QuantResearch',
+  }, { agent: superAgent })
+  assert.equal(suggestion.theme.id, 'quant-research')
+  assert.equal(suggestion.workspace.id, canonical.id)
+
+  const result = await superAgent.tools.get('superagent_dispatch_task').execute({
+    title: 'Quant reuse integration check',
+    prompt: 'Confirm the canonical workspace is reused.',
+    theme: 'quant-research',
+  }, { agent: superAgent, signal: new AbortController().signal })
+  assert.equal(result.workspaceId, canonical.id)
+  assert.equal(result.workspace_created, false)
+  assert.equal(result.workspace_reused, true)
+  assert.equal(result.theme, 'quant-research')
+  assert.equal(orchestrator.store.theme('quant-research').workspaceId, canonical.id)
+  assert.equal(orchestrator.store.workspace(canonical.id).retired, false)
 })

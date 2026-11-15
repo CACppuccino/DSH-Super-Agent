@@ -391,11 +391,12 @@ const WORKSPACES_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    action: { type: 'string', enum: ['list', 'themes', 'assign', 'suggest'], description: 'list inventories SA workspaces and proposed groups; themes lists the persisted registry; assign maps a theme to a workspace; suggest matches a task description to the best theme/workspace.' },
+    action: { type: 'string', enum: ['list', 'themes', 'assign', 'suggest', 'retire', 'reactivate'], description: 'list inventories SA workspaces and proposed groups; themes lists the persisted registry; assign maps a theme to a workspace; suggest matches a task description to the best theme/workspace; retire removes a workspace from the active list (metadata only); reactivate restores it.' },
     theme: { type: 'string', description: 'For assign: theme id or label, e.g. quant-research.' },
     workspace_id: { type: 'string', description: 'For assign: existing workspace id to make canonical for the theme.' },
     title: { type: 'string', description: 'For assign/suggest: optional human-readable theme title or task title.' },
     description: { type: 'string', description: 'For assign: theme description; for suggest: task description to classify.' },
+    reason: { type: 'string', description: 'For retire: why the workspace is being removed from the active list (recorded for rollback/audit).' },
   },
   required: ['action'],
 }
@@ -583,10 +584,13 @@ export class Orchestrator {
     // Offer every workspace the Harness knows, not only the ones this plugin
     // created, so a new Super Agent conversation can live in an existing project.
     const knownWorkspaces = new Map()
+    const retiredIds = new Set(this.store.workspaces().filter((workspace) => workspace.retired).map((workspace) => workspace.id))
     for (const workspace of this.ctx.workspaceRegistry.list()) {
+      if (retiredIds.has(workspace.id)) continue
       knownWorkspaces.set(workspace.id, { id: workspace.id, path: workspace.path, title: workspace.title })
     }
     for (const workspace of this.store.workspaces()) {
+      if (workspace.retired) continue
       knownWorkspaces.set(workspace.id, { id: workspace.id, path: workspace.path, title: workspace.title })
     }
     const workspaces = [...knownWorkspaces.values()].sort((a, b) => a.title.localeCompare(b.title))
@@ -646,13 +650,16 @@ export class Orchestrator {
 
   /** Remember a Harness workspace in the local catalog. */
   async rememberWorkspace(workspace) {
+    const existing = this.store.workspace(workspace.id)
     const record = {
       id: workspace.id,
       path: workspace.path,
       title: workspace.title || basename(workspace.path),
-      createdAt: workspace.createdAt ? Date.parse(workspace.createdAt) : this.now(),
+      createdAt: workspace.createdAt ? Date.parse(workspace.createdAt) : (existing?.createdAt || this.now()),
+      retired: existing?.retired === true,
+      retiredAt: existing?.retiredAt ?? null,
+      retiredReason: existing?.retiredReason ?? '',
     }
-    const existing = this.store.workspace(record.id)
     if (!existing || existing.path !== record.path || existing.title !== record.title) {
       await this.store.update((state) => { state.workspaces[record.id] = record })
     }
@@ -796,6 +803,83 @@ export class Orchestrator {
     return { id: workspace.id, path: workspace.path, title: workspace.title }
   }
 
+  /** One workspace with retirement metadata, workers, and theme mapping. */
+  workspaceDetail(workspaceId) {
+    const id = requireString(workspaceId, 'workspace_id')
+    const stored = this.store.workspace(id)
+    const registry = this.ctx.workspaceRegistry.get(id)
+    if (!stored && !registry) throw new Error(`Workspace not found: ${id}`)
+    const record = stored || {
+      id: registry.id,
+      path: registry.path,
+      title: registry.title || basename(registry.path),
+      createdAt: registry.createdAt ? Date.parse(registry.createdAt) : this.now(),
+      retired: false,
+      retiredAt: null,
+      retiredReason: '',
+    }
+    const workers = this.store.conversations().filter((conversation) => conversation.kind === 'worker' && conversation.workspaceId === id)
+    const theme = this.store.themes().find((entry) => entry.workspaceId === id)
+    return {
+      id: record.id,
+      title: record.title,
+      path: record.path,
+      retired: record.retired === true,
+      retiredAt: record.retiredAt ?? null,
+      retiredReason: record.retiredReason ?? '',
+      theme: theme?.id || null,
+      workerCount: workers.length,
+      workerIds: workers.map((worker) => worker.id),
+      statusCounts: workers.reduce((counts, worker) => {
+        counts[worker.status] = (counts[worker.status] || 0) + 1
+        return counts
+      }, {}),
+    }
+  }
+
+  /**
+   * Retire a workspace from the active list without deleting its directory,
+   * workspace record, or worker conversations. Reversible with reactivate.
+   */
+  async retireWorkspace({ workspaceId, reason } = {}) {
+    const detail = this.workspaceDetail(workspaceId)
+    const mainPath = join(this.stateDir, 'workspaces', 'main')
+    if (detail.path === mainPath) throw new Error('The Super Agent home workspace is protected and cannot be retired')
+    const assigned = this.store.themes().find((theme) => theme.workspaceId === detail.id)
+    if (assigned) throw new Error(`Workspace is canonical for theme "${assigned.id}"; reassign the theme before retiring it`)
+    if (!this.store.workspace(detail.id)) {
+      const registry = this.ctx.workspaceRegistry.get(detail.id)
+      if (registry) await this.rememberWorkspace(registry)
+    }
+    const now = this.now()
+    const text = typeof reason === 'string' && reason.trim().length > 0 ? reason.trim().slice(0, 500) : 'Retired by user'
+    await this.store.update((state) => {
+      const stored = state.workspaces[detail.id]
+      if (!stored) return
+      stored.retired = true
+      stored.retiredAt = now
+      stored.retiredReason = text
+    })
+    return this.workspaceDetail(detail.id)
+  }
+
+  /** Re-activate a retired workspace; no files or conversations were moved. */
+  async reactivateWorkspace({ workspaceId } = {}) {
+    const detail = this.workspaceDetail(workspaceId)
+    if (!this.store.workspace(detail.id)) {
+      const registry = this.ctx.workspaceRegistry.get(detail.id)
+      if (registry) await this.rememberWorkspace(registry)
+    }
+    await this.store.update((state) => {
+      const stored = state.workspaces[detail.id]
+      if (!stored) return
+      stored.retired = false
+      stored.retiredAt = null
+      stored.retiredReason = ''
+    })
+    return this.workspaceDetail(detail.id)
+  }
+
   /** A theme registry record enriched with its canonical workspace. */
   themeView(record) {
     if (!record) return undefined
@@ -821,8 +905,10 @@ export class Orchestrator {
   async assignTheme({ theme, workspaceId, title, description } = {}) {
     const id = normalizeThemeId(requireString(theme, 'theme'))
     const targetId = requireString(workspaceId, 'workspace_id')
-    const workspace = this.ctx.workspaceRegistry.get(targetId) || this.store.workspace(targetId)
+    const storedWorkspace = this.store.workspace(targetId)
+    const workspace = this.ctx.workspaceRegistry.get(targetId) || storedWorkspace
     if (!workspace) throw new Error(`Workspace not found: ${targetId}`)
+    if (storedWorkspace?.retired === true) throw new Error(`Workspace is retired: ${targetId}; reactivate it before assigning a theme`)
     await this.rememberWorkspace(workspace)
     const existing = this.store.theme(id)
     const definition = themeDefinition(id)
@@ -895,6 +981,9 @@ export class Orchestrator {
         id: record.id,
         title: record.title,
         path: record.path,
+        retired: record.retired === true,
+        retiredAt: record.retiredAt ?? null,
+        retiredReason: record.retiredReason ?? '',
         workerCount: workspaceWorkers.length,
         activeWorkers,
         idleWorkers,
@@ -912,8 +1001,10 @@ export class Orchestrator {
       })
     }
     workspaces.sort((left, right) => right.lastActivity - left.lastActivity)
+    const activeWorkspaces = workspaces.filter((workspace) => !workspace.retired)
+    const retiredWorkspaces = workspaces.filter((workspace) => workspace.retired)
     const groupsById = new Map()
-    for (const workspace of workspaces) {
+    for (const workspace of activeWorkspaces) {
       const themeId = workspace.theme || workspace.proposedTheme
       const definition = themeDefinition(themeId)
       if (!groupsById.has(themeId)) {
@@ -929,7 +1020,7 @@ export class Orchestrator {
       groupsById.get(themeId).workspaceIds.push(workspace.id)
     }
     const groups = [...groupsById.values()].map((group) => {
-      const items = group.workspaceIds.map((id) => workspaces.find((workspace) => workspace.id === id))
+      const items = group.workspaceIds.map((id) => activeWorkspaces.find((workspace) => workspace.id === id))
       const assigned = registryThemes.find((theme) => theme.id === group.theme.id && theme.workspaceId)
       const canonicalId = assigned && group.workspaceIds.includes(assigned.workspaceId)
         ? assigned.workspaceId
@@ -946,7 +1037,7 @@ export class Orchestrator {
         idleWorkers: items.reduce((sum, workspace) => sum + workspace.idleWorkers, 0),
       }
     })
-    return { workspaces, groups, themes: this.listThemes() }
+    return { workspaces: activeWorkspaces, retired: retiredWorkspaces, groups, themes: this.listThemes() }
   }
 
   /** Find an existing workspace by id, exact title, or expanded path; never create. */
@@ -971,8 +1062,9 @@ export class Orchestrator {
 
   /** Resolve the workspace for one dispatch, honoring theme reuse first. */
   async resolveDispatchWorkspace({ themeId, themeRecord, workspace, newWorkspace, justification, taskTitle }) {
-    const themeWorkspace = themeRecord?.workspaceId
-      ? (this.ctx.workspaceRegistry.get(themeRecord.workspaceId) || this.store.workspace(themeRecord.workspaceId))
+    const mappedStore = themeRecord?.workspaceId ? this.store.workspace(themeRecord.workspaceId) : undefined
+    const themeWorkspace = themeRecord?.workspaceId && mappedStore?.retired !== true
+      ? (this.ctx.workspaceRegistry.get(themeRecord.workspaceId) || mappedStore)
       : undefined
     if (themeId && themeWorkspace && !newWorkspace) return this.rememberWorkspace(themeWorkspace)
     if (newWorkspace) {
@@ -1059,11 +1151,11 @@ export class Orchestrator {
   }
 
   /** The `superagent_workspaces` tool implementation. */
-  async workspacesTool({ action = 'list', theme, workspaceId, title, description } = {}) {
+  async workspacesTool({ action = 'list', theme, workspaceId, title, description, reason } = {}) {
     switch (action) {
       case 'list': {
         const inventory = await this.workspaceInventory()
-        return { ok: true, workspaces: inventory.workspaces, groups: inventory.groups, themes: inventory.themes }
+        return { ok: true, workspaces: inventory.workspaces, retired: inventory.retired, groups: inventory.groups, themes: inventory.themes }
       }
       case 'themes':
         return { ok: true, themes: this.listThemes() }
@@ -1073,8 +1165,12 @@ export class Orchestrator {
       }
       case 'suggest':
         return this.suggestTheme({ description, title })
+      case 'retire':
+        return { ok: true, workspace: await this.retireWorkspace({ workspaceId, reason }) }
+      case 'reactivate':
+        return { ok: true, workspace: await this.reactivateWorkspace({ workspaceId }) }
       default:
-        throw new Error('action must be list, themes, assign, or suggest')
+        throw new Error('action must be list, themes, assign, suggest, retire, or reactivate')
     }
   }
 
@@ -1636,6 +1732,7 @@ export class Orchestrator {
           workspaceId: args.workspace_id,
           title: args.title,
           description: args.description,
+          reason: args.reason,
         })),
       tool('superagent_create_conversation',
         'Open another Super Agent conversation, optionally in a different workspace, for a separate long-running thread. The new conversation appears in the conversation history.',

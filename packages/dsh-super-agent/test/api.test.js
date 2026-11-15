@@ -484,3 +484,65 @@ test('workspace and theme routes expose inventory, assignment, and suggestion', 
   const unauthorized = await api.request({ method: 'GET', pathname: '/superagent/api/workspaces', headers: {} })
   assert.equal(unauthorized.status, 403)
 })
+
+test('workspace retirement routes hide, resolve, and reactivate without deleting', async () => {
+  const { api, orchestrator } = await setup()
+  const boot = await api.request({ method: 'POST', pathname: '/superagent/api/bootstrap', headers })
+  const canonical = await orchestrator.createWorkspace({ title: 'Quant canonical' })
+  const duplicate = await orchestrator.createWorkspace({ title: 'Quant duplicate' })
+  await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/themes',
+    headers,
+    body: { theme: 'quant-research', workspaceId: canonical.id },
+  })
+
+  const guarded = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/workspaces/retire',
+    headers,
+    body: { workspaceId: canonical.id },
+  })
+  assert.equal(guarded.status, 400)
+  assert.match(guarded.body.error, /canonical for theme/)
+
+  const retired = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/workspaces/retire',
+    headers,
+    body: { workspaceId: duplicate.id, reason: 'Approved consolidation duplicate' },
+  })
+  assert.equal(retired.status, 200)
+  assert.equal(retired.body.workspace.retired, true)
+  assert.equal(retired.body.workspace.retiredReason, 'Approved consolidation duplicate')
+
+  const inventory = await api.request({ method: 'GET', pathname: '/superagent/api/workspaces', headers })
+  assert.equal(inventory.body.workspaces.some((workspace) => workspace.id === duplicate.id), false)
+  assert.equal(inventory.body.retired.some((workspace) => workspace.id === duplicate.id), true)
+  assert.equal(inventory.body.workspaces.some((workspace) => workspace.id === canonical.id), true)
+
+  const detail = await api.request({ method: 'GET', pathname: `/superagent/api/workspaces/${duplicate.id}`, headers })
+  assert.equal(detail.status, 200)
+  assert.equal(detail.body.workspace.id, duplicate.id)
+  assert.equal(detail.body.workspace.retired, true)
+  assert.equal(detail.body.workspace.path, duplicate.path)
+
+  const state = await api.request({ method: 'GET', pathname: '/superagent/api/state', headers })
+  assert.equal(state.body.workspaces.some((workspace) => workspace.id === duplicate.id), false)
+  assert.equal(state.body.workspaces.some((workspace) => workspace.id === canonical.id), true)
+
+  const reactivated = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/workspaces/reactivate',
+    headers,
+    body: { workspace_id: duplicate.id },
+  })
+  assert.equal(reactivated.status, 200)
+  assert.equal(reactivated.body.workspace.retired, false)
+  const after = await api.request({ method: 'GET', pathname: '/superagent/api/workspaces', headers })
+  assert.equal(after.body.workspaces.some((workspace) => workspace.id === duplicate.id), true)
+
+  const unauthorized = await api.request({ method: 'GET', pathname: '/superagent/api/workspaces', headers: {} })
+  assert.equal(unauthorized.status, 403)
+  assert.equal(boot.status, 200)
+})

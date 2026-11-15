@@ -174,3 +174,25 @@ test('theme registry records are normalized and survive a reload', async () => {
   assert.deepEqual(reloaded.themes().map((theme) => theme.id), ['memory'])
   assert.deepEqual(emptyState().themes, {})
 })
+
+test('workspace retirement metadata is normalized and survives a reload', async () => {
+  const { file, store } = await temporaryStore()
+  await store.update((state) => {
+    state.workspaces.retired = {
+      id: 'ws-retired', path: '/tmp/old', title: 'Old place', createdAt: 10,
+      retired: true, retiredAt: 20, retiredReason: 'Consolidated into canonical workspace',
+    }
+    state.workspaces.active = { id: 'ws-active', path: '/tmp/new', title: 'New place', createdAt: 30 }
+  })
+  assert.equal(store.snapshot().workspaces['ws-retired'].retired, true)
+  assert.equal(store.snapshot().workspaces['ws-retired'].retiredAt, 20)
+  assert.equal(store.snapshot().workspaces['ws-active'].retired, false)
+  const reloaded = new StateStore(file)
+  await reloaded.load()
+  assert.deepEqual(reloaded.workspace('ws-retired'), {
+    id: 'ws-retired', path: '/tmp/old', title: 'Old place', createdAt: 10,
+    retired: true, retiredAt: 20, retiredReason: 'Consolidated into canonical workspace',
+  })
+  assert.equal(reloaded.workspace('ws-active').retired, false)
+  assert.equal(reloaded.workspace('ws-active').retiredAt, null)
+})
