@@ -184,6 +184,56 @@ test('the retired accountController service is still honored', async () => {
   assert.deepEqual(summary.balance.wallets, [{ currency: 'CNY', balance: '2.00' }])
 })
 
+test('the rc.3 deepseekAccount service takes precedence over the retired accountController', async () => {
+  const calls = []
+  const billing = createBilling({
+    ctx: {
+      get(name) {
+        if (name === 'deepseekAccount') {
+          return {
+            async getBalance() {
+              calls.push('deepseekAccount')
+              return { status: 'ready', value: [{ currency: 'CNY', balance: '3.00' }], bonusWallets: [] }
+            },
+          }
+        }
+        if (name === 'accountController') {
+          return {
+            async getBalance() {
+              calls.push('accountController')
+              return { status: 'ready', value: [{ currency: 'USD', balance: '9.99' }], bonusWallets: [] }
+            },
+          }
+        }
+        return undefined
+      },
+    },
+    now: () => 1,
+  })
+  const summary = await billing.summary({})
+  assert.equal(summary.balance.status, 'ready')
+  assert.deepEqual(summary.balance.wallets, [{ currency: 'CNY', balance: '3.00' }])
+  assert.deepEqual(calls, ['deepseekAccount'])
+})
+
+test('a throwing account service degrades without throwing', async () => {
+  const throwingLookup = createBilling({
+    ctx: { get() { throw new Error('closed') } },
+    now: () => 1,
+  })
+  assert.equal((await throwingLookup.summary({})).balance.status, 'unavailable')
+
+  const throwingBalance = createBilling({
+    ctx: {
+      get: (name) => name === 'deepseekAccount'
+        ? { async getBalance() { throw new Error('account down') } }
+        : undefined,
+    },
+    now: () => 1,
+  })
+  assert.equal((await throwingBalance.summary({})).balance.status, 'failed')
+})
+
 test('a slow Platform call is bounded and reported as failed', async () => {
   const billing = createBilling({
     ctx: { get: (name) => name === 'deepseekAccount' ? { getBalance: () => new Promise(() => {}) } : undefined },
