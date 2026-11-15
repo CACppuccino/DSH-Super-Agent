@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, test } from 'node:test'
 import { createApi, isAuthorized } from '../lib/api.js'
+import { createBilling } from '../lib/billing.js'
 import { Orchestrator } from '../lib/orchestrator.js'
 import { StateStore } from '../lib/state.js'
 import { FakeHost } from './fakes.js'
@@ -16,14 +17,14 @@ afterEach(async () => {
 const ORIGIN = 'http://127.0.0.1:63100'
 const headers = { host: '127.0.0.1:63100', 'x-superagent-request': '1' }
 
-async function setup() {
+async function setup(options = {}) {
   const stateDir = await mkdtemp(join(tmpdir(), 'dsh-super-agent-api-'))
   dirs.push(stateDir)
   const host = new FakeHost()
   const store = new StateStore(join(stateDir, 'state.json'))
   const orchestrator = new Orchestrator({ ctx: host, store, stateDir })
   await orchestrator.load()
-  const api = createApi({ orchestrator, origin: ORIGIN })
+  const api = createApi({ orchestrator, origin: ORIGIN, billing: options.billing })
   return { stateDir, host, orchestrator, api }
 }
 
@@ -214,4 +215,109 @@ test('pending decisions validate input and expose structured errors', async () =
 
   const unauthorized = await api.request({ method: 'GET', pathname: '/superagent/api/pending', headers: {} })
   assert.equal(unauthorized.status, 403)
+})
+
+test('the usage route is same-origin only and forwards locale and timezone', async () => {
+  const calls = []
+  const billing = {
+    async summary(client) {
+      calls.push(client)
+      return {
+        balance: { status: 'ready', wallets: [{ currency: 'CNY', balance: '12.34' }], bonusWallets: [], fetchedAt: 1 },
+        usage: { status: 'ready', windowHours: 24, since: 0, keys: [], totalTokens: 0, requests: 0, generatedAt: 2 },
+        generatedAt: 2,
+      }
+    },
+  }
+  const { api } = await setup({ billing })
+
+  const refused = await api.request({ method: 'GET', pathname: '/superagent/api/usage', headers: {} })
+  assert.equal(refused.status, 403)
+
+  const response = await api.request({
+    method: 'GET',
+    pathname: '/superagent/api/usage',
+    query: { locale: 'zh-CN', tz: '28800' },
+    headers,
+  })
+  assert.equal(response.status, 200)
+  assert.equal(response.body.balance.wallets[0].currency, 'CNY')
+  assert.deepEqual(calls, [{ locale: 'zh-CN', timezoneOffsetSeconds: 28_800 }])
+
+  const clamped = await api.request({
+    method: 'GET',
+    pathname: '/superagent/api/usage',
+    query: { locale: 'not a locale!', tz: '999999' },
+    headers,
+  })
+  assert.equal(clamped.status, 200)
+  assert.deepEqual(calls[1], { locale: 'en', timezoneOffsetSeconds: 0 })
+})
+
+test('the usage route degrades to unavailable when no billing service is mounted', async () => {
+  const { api } = await setup()
+  const response = await api.request({ method: 'GET', pathname: '/superagent/api/usage', headers })
+  assert.equal(response.status, 200)
+  assert.equal(response.body.balance.status, 'unavailable')
+  assert.equal(response.body.usage.status, 'unavailable')
+  assert.equal(response.body.platform.status, 'unavailable')
+  assert.deepEqual(response.body.usage.keys, [])
+})
+
+
+
+test('the serialized usage response never contains key secrets', async () => {
+  const billing = createBilling({
+    ctx: {
+      get(name) {
+        if (name !== 'credentials') return undefined
+        return {
+          async readRecord() {
+            return { kind: 'grant', payload: { token: 'grant-secret', issuer: 'https://platform.deepseek.com' } }
+          },
+        }
+      },
+    },
+    now: () => Date.parse('2026-11-14T06:00:00Z'),
+    fetchImpl: async () => ({
+      ok: true,
+      async json() {
+        return {
+          code: 0,
+          data: {
+            biz_code: 0,
+            biz_data: {
+              data: [{
+                currency: 'CNY',
+                series: [{
+                  api_key: {
+                    tracking_id: 'tracking-secret-value',
+                    name: 'DeepSeek Harness',
+                    key_type: 'DSH',
+                    sensitive_id: 'sk-super-secret',
+                  },
+                  model: 'deepseek-flash',
+                  buckets: [{ time: Date.parse('2026-11-14T06:00:00Z') / 1000, cost: '1.25' }],
+                }],
+              }],
+            },
+          },
+        }
+      },
+    }),
+  })
+  const { api } = await setup({ billing })
+  const response = await api.request({
+    method: 'GET',
+    pathname: '/superagent/api/usage',
+    query: { locale: 'zh-CN', tz: '28800' },
+    headers,
+  })
+  assert.equal(response.status, 200)
+  const text = JSON.stringify(response.body)
+  for (const forbidden of ['sensitive_id', 'sk-super-secret', 'tracking-secret-value', 'grant-secret', 'tracking_id']) {
+    assert.equal(text.includes(forbidden), false, forbidden)
+  }
+  assert.match(text, /DeepSeek Harness/)
+  assert.match(text, /1\.25/)
 })

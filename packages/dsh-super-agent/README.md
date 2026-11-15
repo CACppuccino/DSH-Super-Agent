@@ -12,7 +12,7 @@ The Super Agent is a persistent orchestrator. It does not operate the computer i
 - open additional Super Agent conversations for separate long-running threads;
 - receive worker progress notices as hooks on Session events and relay them to the user.
 
-The panel shows the active Super Agent chat in the center and a conversation history rail on the right. The rail groups workers under the Super Agent conversation that launched them; clicking a conversation opens its detail. Below the conversation list, a **待决策项 / Pending decisions** section lists unanswered questions the Super Agent registered with `superagent_pending_decision`. Both rail sections collapse independently and remember their state across reloads. Clicking a pending item opens its question card in the main conversation area with optional context, choice buttons, and a free-text answer; submitting removes it from the rail, collapses the card automatically, and delivers the answer to the Super Agent as a user message. The Super Agent center embeds the stock DSH `conversation.content` factory (the same chat/composer surface as a normal conversation), wrapped in the retained Session's `SessionProvider`; a slim strip above it keeps the live worker count and latest progress visible. Worker conversations stay in the panel's compact read-only transcript and can be opened in the normal DSH conversation view. Assistant replies and worker progress render Markdown through the stock `@deepseek-ai/dsh-client-ui-primitives` `MarkdownText` component, so headings, lists, links, tables, and fenced code blocks use the same styling, sanitization, and copy behavior as the built-in chat.
+The panel shows the active Super Agent chat in the center and a conversation history rail on the right. The rail groups workers under the Super Agent conversation that launched them; clicking a conversation opens its detail. Below the conversation list, a **待决策项 / Pending decisions** section lists unanswered questions the Super Agent registered with `superagent_pending_decision`. Both rail sections collapse independently and remember their state across reloads. Clicking a pending item opens its question card in the main conversation area with optional context, choice buttons, and a free-text answer; submitting removes it from the rail, shows the answered state briefly, then collapses the card automatically while the answer is delivered to the Super Agent as a user message. The Super Agent center embeds the stock DSH `conversation.content` factory (the same chat/composer surface as a normal conversation), wrapped in the retained Session's `SessionProvider`; a slim strip above it keeps the live worker count and latest progress visible. Worker conversations stay in the panel's compact read-only transcript and can be opened in the normal DSH conversation view. Assistant replies and worker progress render Markdown through the stock `@deepseek-ai/dsh-client-ui-primitives` `MarkdownText` component, so headings, lists, links, tables, and fenced code blocks use the same styling, sanitization, and copy behavior as the built-in chat.
 
 ## Install
 
@@ -21,7 +21,7 @@ talks to): clone the repository and run `./install.sh --restart`. See the
 [repository README](../../README.md) for the macOS requirements, the iPhone pairing steps,
 and uninstalling.
 
-Install this directory alone as a bundle through the Harness Plugin Manager (or `plugin_manager` `install_bundle` with the absolute package directory). The bundle patch inserts one row, `dsh-super-agent`; the Client half loads from `./client`.
+Install this directory as a bundle through the Harness Plugin Manager (or `plugin_manager` `install_bundle` with the absolute package directory). The bundle patch inserts one row, `dsh-super-agent`; the Client half loads from `./client`.
 
 For a profile launched by the `dsh` CLI, the equivalent command is:
 
@@ -41,7 +41,7 @@ State is kept under `$DSH_HOME/state/dsh-super-agent/` (override with `DSH_SUPER
 
    The Super Agent calls `superagent_dispatch_task`, creates a worker Session in that workspace, and tells you the worker id. As the worker reports or finishes a turn, a progress notice wakes the Super Agent and it relays the meaningful part.
 4. Use the right rail to inspect the worker conversation. Click **Open full conversation** to see it in the normal DSH conversation view.
-5. When the Super Agent needs a decision, it registers a pending item. The **待决策项 / Pending decisions** section below the conversation list shows it; click the item, choose an option or type an answer, then submit. The item leaves the rail, the card collapses automatically, and the Super Agent receives the answer as a user message. Both rail sections have independent collapse buttons whose state survives a reload.
+5. When the Super Agent needs a decision, it registers a pending item. The **待决策项 / Pending decisions** section below the conversation list shows it; click the item, choose an option or type an answer, then submit. The item leaves the rail, the card shows the answered state briefly and then collapses automatically, and the Super Agent receives the answer as a user message. Both rail sections have independent collapse buttons whose state survives a reload.
 6. **New conversation** can place a new Super Agent conversation in any workspace the Harness knows, or create a new workspace path. The workspace picker includes all registered workspaces, not only the ones this plugin created.
 
 ## Model tools
@@ -72,6 +72,7 @@ lib/orchestrator.js       Conversations, workspaces, dispatch, progress relay
 lib/state.js              Atomic JSON catalog and bounded progress log
 lib/pending.js            Atomic pending-decision queue
 lib/api.js                Same-origin panel API
+lib/billing.js            Account balance, Platform per-key spend, local 24-hour tokens
 client.js                 Sidebar entry, panel shell, embedded stock chat, history rail
 locale/, icon.svg         Plugin Manager metadata
 test/                     Node test suite for host and client logic
@@ -97,7 +98,42 @@ The Client half uses the public Client services `sessions`, `uiWorkspace`, `slot
 node --test test/*.test.js
 ```
 
-The suite covers the state store, the pending-decision store, dispatch/workspace/progress orchestration, HTTP authorization and routes (including pending create/list/resolve and answer delivery), the Client's pure transcript/grouping/registration logic, rail section ordering and collapse persistence, the inline pending card, and the auto-dismiss answered state. It uses in-process fakes and temporary directories; no model or live Session is needed.
+The suite covers the state store, the pending-decision store, dispatch/workspace/progress orchestration, HTTP authorization and routes (including pending create/list/resolve and answer delivery), the Client's pure transcript/grouping/registration logic, rail section ordering and collapse persistence, the inline pending card, and the header widget's balance/usage folding, fallback, and formatting. It uses in-process fakes and temporary directories; no model or live Session is needed.
+
+## 余额与 24 小时用量（标题栏状态组件）
+
+Super Agent 面板标题栏右侧有一个紧凑状态组件。它显示的是**两个不同窗口的数**，不能相加或互相换算：
+
+- **余额**：显示当前登录 DeepSeek 账户的钱包余额（CNY/USD，带币种符号）。数据来自宿主可选的账户服务 `deepseekAccount.getBalance({version, locale, timezoneOffsetSeconds})`（DSH 0.2.2 起；旧版的 `accountController` 同名同语义，仍作为后备读取），与 `dsh-remote` 的 `host.balance` 同源；未登录、读取失败，或当前 profile 没有该服务时显示 `—`，不会显示 0。
+- **今日（Platform 日，含时区）**：每个 API key 的消费，来自 DeepSeek Platform 用量页使用的私有接口 `GET https://platform.deepseek.com/api/v0/usage/by_api_key/cost?start=<unix>&end=<unix>&tz=<offset>`，使用账户登录后已经保存在凭据存储里的 grant（`x-dsh-auth-token`），不新增任何登录或浏览器认证面。接口按 `86400` 秒的日历日分桶，因此金额是**今日**（按界面时区），不是滚动 24 小时。
+- **滚动 24h（本地计算）**：同一列表下方按 **provider 路由**（`deepseek-official` = API key 路由，`deepseek-account` = 账户路由）汇总最近 24 小时本地 Session 日志中 `assistant/message.data.usage` 的 provider 上报 token（输入、输出、缓存读/写、请求数）。这是精确的滚动 24 小时 token 数，完全在本地计算。
+- 列表中的 API key 直接来自 Platform 响应的 `api_key` 系列，支持 0/1/N 个 key（当前账户实测返回 AutoQuant / DeepSeek Harness / MacClaudeCode），不依赖 `~/.dsh/.credentials.yaml` 里是否有 key 记录。为了列出“今日 0 消费但最近仍活跃”的 key，金额请求使用“昨天 + 今天”的 key 枚举窗口，只累加今天的桶；因此 Harness 今日 `¥0.00` 也会显示。只保留 `api_key.name`（或派生的 `key-<hash6>` 短标签）、12 位哈希 id、类型、模型和金额；`sensitive_id` 与 `tracking_id` 在解析边界丢弃，不写入缓存、日志、API 响应或错误。
+- 每 60 秒刷新，窗口重新获得焦点或页面重新可见时也会刷新。请求失败时保留上一次成功结果，不向面板抛错误。面板宽度小于 820px 时只保留余额胶囊，展开面板仍包含全部列表。
+- 只显示 key 名称/派生短标签、provider 路由名和数量，不读取、不输出任何密钥值。
+
+**私有接口与失败行为（重要）**：
+
+- `by_api_key/cost` 是 Platform 控制台页面使用的**私有、未文档化接口**（社区记录见 [CodexBar 的 DeepSeek 文档](https://github.com/steipete/codexbar/blob/main/docs/deepseek.md)），可能随时改动或失效。
+- 请求有 4 秒超时；任何非 200、`code != 0`、`biz_code != 0`、JSON/结构变化或字段损坏都会 fail-closed 为 `failed`，不重试、不写错误日志、不阻塞面板，UI 自动退回“仅滚动 24h token”模式。余额与 token 不受影响。
+- 金额缓存按 **(Platform 日, 时区)** 键，默认 5 分钟；跨过本地午夜键自然变化。token 缓存 30 秒。两者都不会写入磁盘。
+- **Kill switch**：在 profile 的 `cordis.patch.yml` 里关闭私有接口，组件只显示本地滚动 24h token：
+
+```yaml
+- id: dsh-super-agent
+  config:
+    platformSpend: false
+```
+
+**准确性说明**：
+
+- 金额是“今日”日历日桶，**不是滚动 24 小时**；滚动 24 小时只有本地 token 数。不要把它当成“过去 24 小时花了多少钱”。
+- Harness 的 LLM 注册表没有文本 token 单价表（只有图片请求计价），因此无法从本地 token 诚实地折算金额；金额只来自 Platform 返回值。
+- 余额来自账户钱包，而每个 API key 的消费来自 Platform 的按 key 账单；两者口径可能不同，不应被当作同一本账。
+- Platform 没有公开的按密钥计费 API；API key 本身无法读取私有控制台接口（实测返回 `code: 40003`），必须使用控制台会话 token。如果账户未登录、grant 过期，或私有接口不可用，金额显示 `—`/提示，token 仍照常显示。
+- 金额依赖账户 provider 当前写入的 `deepseek-account-platform/default` 凭据记录；如果未来 DSH 改动该记录或 token 形式，私有接口会失败并自动退回 token 模式。
+- 刚结束的请求可能还在持久化批处理中，或 Platform 账单尚未刷新；最多等下一轮 60 秒刷新即可。
+
+数据由宿主新增的 `GET /superagent/api/usage` 提供，和 `/state` 共用同一套同源校验（`x-superagent-request: 1`、Host/Origin 匹配），没有新增浏览器认证面。余额只走账户服务；Platform 金额只读账户 grant 并请求上述私有接口；本地 token 只读 `ctx.sessionPersistence` 暴露的 Session 日志，不会启动模型请求。
 
 ## Remote and multiple profiles
 

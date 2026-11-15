@@ -9,6 +9,7 @@
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createApi } from './lib/api.js'
+import { createBilling } from './lib/billing.js'
 import { Orchestrator } from './lib/orchestrator.js'
 import { StateStore, defaultStateDir } from './lib/state.js'
 
@@ -52,8 +53,10 @@ function originOf(ctx) {
 /**
  * Mount the plugin.
  * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {{ platformSpend?: boolean }} [rawConfig]
  */
-export async function apply(ctx) {
+export async function apply(ctx, rawConfig = {}) {
+  const config = rawConfig && typeof rawConfig === 'object' ? rawConfig : {}
   const stateDir = process.env.DSH_SUPERAGENT_STATE_DIR && process.env.DSH_SUPERAGENT_STATE_DIR.length > 0
     ? process.env.DSH_SUPERAGENT_STATE_DIR
     : defaultStateDir()
@@ -83,7 +86,12 @@ export async function apply(ctx) {
     })
   }), 'dsh-super-agent: follow session events')
 
-  const api = createApi({ orchestrator, origin: originOf(ctx) })
+  // Balance, per-key Platform spend, and local 24-hour usage are optional:
+  // look them up per request so a profile without the desktop account,
+  // credentials, or persistence never blocks the panel. The billing service
+  // owns its own cache and timeouts.
+  const billing = createBilling({ ctx, platformSpend: config.platformSpend !== false })
+  const api = createApi({ orchestrator, origin: originOf(ctx), billing })
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: '/superagent',

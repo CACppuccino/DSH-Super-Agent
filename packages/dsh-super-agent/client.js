@@ -117,6 +117,42 @@ window.__ModuleLoader__.load({
         footnotes: '脚注',
         workersRunning: '{count} 个 worker 运行中',
         noWorkersRunning: '没有运行中的 worker',
+        balance: '余额',
+        balanceTitle: '账户余额',
+        usagePanelTitle: '余额与用量',
+        spendTitle: '滚动 24h（本地计算）',
+        last24h: '24h',
+        apiKey: 'API 密钥',
+        account: '账户',
+        unknownProvider: '未知路由',
+        inputTokens: '输入',
+        outputTokens: '输出',
+        cacheReadTokens: '缓存读',
+        cacheWriteTokens: '缓存写',
+        usageRequests: '{count} 次请求',
+        usageLastRequest: '最近一次',
+        usageNote: '金额来自 DeepSeek Platform 的私有页面用量接口（未文档化，可能随时变动），按界面时区取“今日”日历日桶；token 来自本地会话日志，是精确的滚动 24 小时汇总。两者窗口不同，不能相加或互相换算；平台没有公开的按密钥计费 API。',
+        today: '今日',
+        platformDayLabel: '今日（Platform 日，含时区）',
+        platformPrivateTag: '私有/未文档化',
+        apiKeysTitle: 'API 密钥 · 今日（Platform 日，含时区）',
+        platformSpendTitle: '今日消费（Platform 日，含时区；私有接口）',
+        rollingLabel: '滚动 24h（本地计算）',
+        localTag: '本地',
+        differentWindows: '金额与 token 是不同窗口，不能相加或互相换算。',
+        platformDisabled: '已通过配置禁用 Platform 私有接口，仅显示本地 token',
+        platformUnavailable: 'Platform 私有用量接口不可用，仅显示本地滚动 24h token',
+        platformSignedOut: '登录 DeepSeek 后可显示每个密钥的今日消费',
+        noPlatformSpend: '今日没有消费记录',
+        keyFallback: '密钥 {id}',
+        balanceSignedOut: '登录 DeepSeek 后显示余额',
+        balanceUnavailable: '无法读取余额',
+        usageUnavailable: '无法读取本地用量',
+        usagePartial: '部分会话日志不可读，token 为下限',
+        noUsage: '最近 24 小时没有模型调用',
+        usageRefresh: '刷新用量',
+        usageUpdated: '更新于',
+        bonusBalance: '赠送余额',
       },
       en: {
         title: 'Super Agent',
@@ -208,6 +244,42 @@ window.__ModuleLoader__.load({
         footnotes: 'Footnotes',
         workersRunning: '{count} workers running',
         noWorkersRunning: 'No workers running',
+        balance: 'Balance',
+        balanceTitle: 'Account balance',
+        usagePanelTitle: 'Balance & usage',
+        spendTitle: 'Rolling 24h (local)',
+        last24h: '24h',
+        apiKey: 'API key',
+        account: 'Account',
+        unknownProvider: 'Unknown route',
+        inputTokens: 'in',
+        outputTokens: 'out',
+        cacheReadTokens: 'cache read',
+        cacheWriteTokens: 'cache write',
+        usageRequests: '{count} requests',
+        usageLastRequest: 'last',
+        usageNote: 'Money comes from DeepSeek Platform’s private, undocumented dashboard usage endpoint and is the “today” calendar-day bucket in the UI timezone; it may change at any time. Tokens come from local Session logs and are an exact rolling 24-hour sum. The windows differ and cannot be added or converted; the platform exposes no documented per-key billing API.',
+        today: 'Today',
+        platformDayLabel: 'Today (Platform day, tz-aware)',
+        platformPrivateTag: 'private/undocumented',
+        apiKeysTitle: 'API keys · Today (Platform day, tz-aware)',
+        platformSpendTitle: 'Today spend (Platform day, tz-aware; private endpoint)',
+        rollingLabel: 'Rolling 24h (local)',
+        localTag: 'local',
+        differentWindows: 'Money and tokens cover different windows; they cannot be added or converted into each other.',
+        platformDisabled: 'Platform private endpoint disabled by configuration; showing local tokens only',
+        platformUnavailable: 'Platform private usage unavailable; showing local rolling-24h tokens only',
+        platformSignedOut: 'Sign in to DeepSeek to show per-key spend today',
+        noPlatformSpend: 'No spend recorded today',
+        keyFallback: 'Key {id}',
+        balanceSignedOut: 'Sign in to DeepSeek to see the balance',
+        balanceUnavailable: 'Balance unavailable',
+        usageUnavailable: 'Local usage unavailable',
+        usagePartial: 'Some Session logs were unreadable; token totals are a lower bound',
+        noUsage: 'No model calls in the last 24 hours',
+        usageRefresh: 'Refresh usage',
+        usageUpdated: 'Updated',
+        bonusBalance: 'Bonus',
       },
     }
 
@@ -223,6 +295,48 @@ window.__ModuleLoader__.load({
 .sa-title { font-size: 14px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sa-subtitle { font-size: 12px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sa-top-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+.sa-usage { position: relative; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.sa-usage-chip { font: inherit; font-size: 12px; cursor: pointer; }
+.sa-usage-chip .sa-usage-amount { color: var(--dsw-alias-label-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sa-usage-balance .sa-usage-amount { min-width: 42px; text-align: right; }
+.sa-usage-spend .sa-usage-amount { min-width: 30px; text-align: right; }
+.sa-usage-chip.spend { gap: 5px; }
+.sa-usage-chip.spend .sa-usage-window { color: var(--dsw-alias-label-caption); font-size: 10.5px; letter-spacing: .02em; text-transform: uppercase; }
+.sa-usage-chip .sa-usage-caret { color: var(--dsw-alias-label-caption); margin-left: 1px; }
+.sa-usage-chip[aria-expanded="true"] { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 36%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-2)); }
+.sa-usage-pop { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: min(326px, 88vw);
+  max-height: min(70vh, 520px); overflow-y: auto;
+  border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-overlay);
+  box-shadow: 0 16px 44px color-mix(in srgb, #000 24%, transparent); padding: 11px 12px; text-align: left; }
+.sa-usage-pop-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.sa-usage-pop-title { font-size: 12px; font-weight: 650; color: var(--dsw-alias-label-primary); }
+.sa-usage-pop-time { margin-left: auto; font-size: 10.5px; color: var(--dsw-alias-label-caption); white-space: nowrap; }
+.sa-usage-refresh { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px;
+  border: 1px solid transparent; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.sa-usage-refresh:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.sa-usage-section { border-top: 1px solid var(--dsw-alias-border-l1); padding-top: 8px; margin-top: 8px; }
+.sa-usage-pop-head + .sa-usage-section { border-top: 0; padding-top: 0; margin-top: 0; }
+.sa-usage-section-title { font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--dsw-alias-label-caption); margin-bottom: 5px; }
+.sa-usage-tag { margin-left: 6px; padding: 0 5px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l1);
+  font-size: 9.5px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--dsw-alias-label-secondary); }
+.sa-usage-window-note { margin: 2px 0 8px; font-size: 10.5px; line-height: 1.45; color: var(--dsw-alias-label-caption); }
+.sa-usage-wallet { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 3px 0;
+  font-size: 12.5px; color: var(--dsw-alias-label-secondary); }
+.sa-usage-wallet strong { color: var(--dsw-alias-label-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sa-usage-key { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; border-top: 1px dashed var(--dsw-alias-border-l1); }
+.sa-usage-key:first-of-type { border-top: 0; }
+.sa-usage-key-head { display: flex; align-items: baseline; gap: 8px; }
+.sa-usage-key-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px; color: var(--dsw-alias-label-primary); }
+.sa-usage-key-kind { flex: 0 0 auto; font-size: 10.5px; color: var(--dsw-alias-label-caption); }
+.sa-usage-key-total { margin-left: auto; flex: 0 0 auto; font-size: 12.5px; font-weight: 600;
+  color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; }
+.sa-usage-key-detail { font-size: 10.5px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.sa-usage-empty { padding: 3px 0 2px; font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1.45; }
+.sa-usage-note { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--dsw-alias-border-l1);
+  font-size: 10.5px; line-height: 1.5; color: var(--dsw-alias-label-caption); }
 .sa-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 240px; padding: 4px 9px; border-radius: 999px;
   border: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2);
   font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -415,6 +529,9 @@ window.__ModuleLoader__.load({
 .sa-error { color: var(--dsw-alias-state-error-primary); font-size: 12px; white-space: pre-wrap; }
 .sa-hidden { display: none !important; }
 .sa-rail-toggle { display: none; }
+@media (max-width: 820px) {
+  .sa-usage-spend { display: none; }
+}
 @media (max-width: 980px) {
   .sa-rail { position: absolute; right: 0; top: 0; bottom: 0; z-index: 10; box-shadow: -12px 0 36px color-mix(in srgb, #000 16%, transparent); }
   .sa-rail-toggle { display: inline-flex; }
@@ -544,6 +661,137 @@ window.__ModuleLoader__.load({
       if (hours < 24) return t('hoursAgo', { count: hours })
       return t('daysAgo', { count: Math.floor(hours / 24) })
     }
+
+    /** Group workers under their Super Agent conversation. */
+    /** Compact token count: 942, 12.3k, 4.5M. */
+    function formatTokens(value) {
+      const number = Number(value)
+      if (!Number.isFinite(number) || number <= 0) return '0'
+      if (number < 1_000) return String(Math.trunc(number))
+      const units = [
+        [999_950_000_000, 'T'],
+        [999_950_000, 'B'],
+        [999_950, 'M'],
+        [1_000, 'k'],
+      ]
+      for (const [size, suffix] of units) {
+        if (number >= size) {
+          const scaled = number / size
+          const decimals = scaled >= 100 ? 0 : 1
+          return `${scaled.toFixed(decimals).replace(/\.0$/, '')}${suffix}`
+        }
+      }
+      return String(Math.trunc(number))
+    }
+
+    /** One wallet as a currency amount; unknown currencies keep their code. */
+    function formatWallet(wallet) {
+      if (!wallet || typeof wallet !== 'object') return '—'
+      const currency = typeof wallet.currency === 'string' ? wallet.currency.trim().toUpperCase() : ''
+      const symbol = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : ''
+      const number = Number(wallet.balance)
+      const amount = Number.isFinite(number)
+        ? number.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : String(wallet.balance ?? '')
+      if (symbol.length > 0) return `${symbol}${amount}`
+      return `${currency} ${amount}`.trim()
+    }
+
+    /** A Platform calendar-day cost, in its reported currency. */
+    function formatMoney(value, currency) {
+      if (value === null || value === undefined || value === '') return '—'
+      const number = Number(value)
+      if (!Number.isFinite(number)) return '—'
+      const code = typeof currency === 'string' ? currency.trim().toUpperCase() : ''
+      const symbol = code === 'CNY' ? '¥' : code === 'USD' ? '$' : ''
+      const amount = number.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      return symbol.length > 0 ? `${symbol}${amount}` : `${code} ${amount}`.trim()
+    }
+
+    /** Normalize the Platform per-key spend rows. */
+    function platformRows(platform) {
+      if (!platform || platform.status !== 'ready' || !Array.isArray(platform.keys)) return []
+      return platform.keys
+        .filter((key) => key && typeof key === 'object')
+        .map((key) => ({
+          id: typeof key.id === 'string' ? key.id : '',
+          label: typeof key.label === 'string' ? key.label : typeof key.name === 'string' ? key.name : '',
+          keyType: typeof key.keyType === 'string' ? key.keyType : '',
+          currency: typeof key.currency === 'string' ? key.currency.trim().toUpperCase() : '',
+          cost: Number(key.cost) || 0,
+          models: Array.isArray(key.models) ? key.models.filter((model) => typeof model === 'string') : [],
+        }))
+        .sort((left, right) => right.cost - left.cost)
+    }
+
+    /** The largest Platform currency total, or a sum-by-currency fallback. */
+    function platformTotal(platform) {
+      if (!platform || platform.status !== 'ready') return undefined
+      const totals = Array.isArray(platform.totals)
+        ? platform.totals.filter((total) => total && typeof total.currency === 'string' && Number.isFinite(Number(total.cost)))
+        : []
+      if (totals.length > 0) {
+        const largest = totals.slice().sort((left, right) => Number(right.cost) - Number(left.cost))[0]
+        return { currency: largest.currency, cost: Number(largest.cost) }
+      }
+      const byCurrency = new Map()
+      for (const row of platformRows(platform)) {
+        byCurrency.set(row.currency, (byCurrency.get(row.currency) || 0) + row.cost)
+      }
+      const entries = [...byCurrency.entries()].filter(([currency]) => currency.length > 0).sort((left, right) => right[1] - left[1])
+      return entries.length > 0 ? { currency: entries[0][0], cost: entries[0][1] } : undefined
+    }
+
+    /** Chip text for the account balance; a signed-out or failed read is an em dash. */
+    function balanceText(balance) {
+      if (!balance || balance.status !== 'ready') return '—'
+      const wallets = Array.isArray(balance.wallets) ? balance.wallets : []
+      if (wallets.length === 0) return '—'
+      return wallets.slice(0, 2).map(formatWallet).join(' · ')
+    }
+
+    /** Total 24-hour tokens, tolerating a partial payload. */
+    function totalUsageTokens(usage) {
+      if (!usage || usage.status !== 'ready') return 0
+      const direct = Number(usage.totalTokens)
+      if (Number.isFinite(direct) && direct > 0) return direct
+      const keys = Array.isArray(usage.keys) ? usage.keys : []
+      return keys.reduce((sum, key) => sum + (Number(key && key.totalTokens) || 0), 0)
+    }
+
+    /** Normalize the usage rows the widget renders. */
+    function usageKeyRows(usage) {
+      if (!usage || usage.status !== 'ready' || !Array.isArray(usage.keys)) return []
+      return usage.keys
+        .filter((key) => key && typeof key === 'object')
+        .map((key) => ({
+          provider: typeof key.provider === 'string' && key.provider.length > 0 ? key.provider : 'unknown',
+          providerName: typeof key.providerName === 'string' && key.providerName.length > 0 ? key.providerName : '',
+          kind: key.kind === 'account' ? 'account' : 'api-key',
+          requests: Number(key.requests) || 0,
+          inputTokens: Number(key.inputTokens) || 0,
+          outputTokens: Number(key.outputTokens) || 0,
+          cacheReadTokens: Number(key.cacheReadTokens) || 0,
+          cacheWriteTokens: Number(key.cacheWriteTokens) || 0,
+          totalTokens: Number(key.totalTokens) || 0,
+          lastAt: Number(key.lastAt) || 0,
+          models: Array.isArray(key.models) ? key.models.filter((model) => typeof model === 'string') : [],
+        }))
+        .sort((left, right) => right.totalTokens - left.totalTokens)
+    }
+
+    /** One compact breakdown line for a usage row. */
+    function usageBreakdown(row, t) {
+      if (!row) return ''
+      const parts = []
+      if (row.inputTokens > 0) parts.push(`${t('inputTokens')} ${formatTokens(row.inputTokens)}`)
+      if (row.outputTokens > 0) parts.push(`${t('outputTokens')} ${formatTokens(row.outputTokens)}`)
+      if (row.cacheReadTokens > 0) parts.push(`${t('cacheReadTokens')} ${formatTokens(row.cacheReadTokens)}`)
+      if (row.cacheWriteTokens > 0) parts.push(`${t('cacheWriteTokens')} ${formatTokens(row.cacheWriteTokens)}`)
+      if (row.requests > 0) parts.push(t('usageRequests', { count: row.requests }))
+      return parts.join(' · ')
+    }
+
 
     /** Group workers under their Super Agent conversation. */
     function groupConversations(conversations) {
@@ -808,6 +1056,65 @@ window.__ModuleLoader__.load({
     }
 
     /** A ticking clock for relative labels. */
+    /**
+     * The locale/timezone the host should report to Platform. The account
+     * client metadata makes Platform answer as this UI, not the last caller.
+     */
+    function usageRequestPath(ctx) {
+      let locale = 'en'
+      try {
+        const snapshot = ctx && ctx.locale && typeof ctx.locale.getSnapshot === 'function' ? ctx.locale.getSnapshot() : undefined
+        if (snapshot && typeof snapshot.active === 'string' && snapshot.active.length > 0) locale = snapshot.active
+      } catch { /* keep the English default */ }
+      const offset = -new Date().getTimezoneOffset() * 60
+      return `/usage?locale=${encodeURIComponent(locale)}&tz=${offset}`
+    }
+
+    /**
+     * Balance + 24-hour usage. Refreshes every 60 seconds and whenever the
+     * panel regains window focus or visibility. A failed refresh keeps the last
+     * good payload; the widget never surfaces a raw error.
+     */
+    function useUsage(ctx) {
+      const [state, setState] = React.useState({ status: 'loading', data: undefined, error: undefined })
+      const aliveRef = React.useRef(true)
+      React.useEffect(() => () => { aliveRef.current = false }, [])
+      const load = React.useCallback(async () => {
+        try {
+          const data = await api(usageRequestPath(ctx))
+          if (aliveRef.current) setState({ status: 'ready', data, error: undefined })
+        } catch (error) {
+          if (aliveRef.current) {
+            setState((previous) => ({ ...previous, status: previous.data ? 'stale' : 'error', error }))
+          }
+        }
+      }, [ctx])
+      React.useEffect(() => {
+        aliveRef.current = true
+        let timer
+        const tick = () => { load().catch(() => {}) }
+        tick()
+        timer = setInterval(() => {
+          if (typeof document === 'undefined' || !document.hidden) tick()
+        }, 60_000)
+        const onFocus = () => tick()
+        const onVisibility = () => {
+          if (typeof document === 'undefined' || !document.hidden) tick()
+        }
+        if (typeof window !== 'undefined') window.addEventListener('focus', onFocus)
+        if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
+        return () => {
+          aliveRef.current = false
+          clearInterval(timer)
+          if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus)
+          if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
+        }
+      }, [load])
+      return { ...state, refresh: load }
+    }
+
+
+    /** A ticking clock for relative labels. */
     function useNow() {
       const [now, setNow] = React.useState(Date.now())
       React.useEffect(() => {
@@ -841,8 +1148,142 @@ window.__ModuleLoader__.load({
       h('circle', { cx: 12, cy: 12, r: 8.4, opacity: 0.35 }))
     }
 
+    /** Account balance plus the last 24 hours of local usage, in the header. */
+    function UsageWidget({ t, usage, now }) {
+      const [open, setOpen] = React.useState(false)
+      const rootRef = React.useRef(null)
+      React.useEffect(() => {
+        if (!open) return undefined
+        const onPointer = (event) => {
+          const node = rootRef.current
+          if (node && typeof node.contains === 'function' && !node.contains(event.target)) setOpen(false)
+        }
+        const onKey = (event) => { if (event.key === 'Escape') setOpen(false) }
+        if (typeof document !== 'undefined') {
+          document.addEventListener('pointerdown', onPointer)
+          document.addEventListener('keydown', onKey)
+        }
+        return () => {
+          if (typeof document !== 'undefined') {
+            document.removeEventListener('pointerdown', onPointer)
+            document.removeEventListener('keydown', onKey)
+          }
+        }
+      }, [open])
+
+      const data = usage ? usage.data : undefined
+      const balance = data ? data.balance : undefined
+      const usageData = data ? data.usage : undefined
+      const platformData = data ? data.platform : undefined
+      const rows = usageKeyRows(usageData)
+      const moneyRows = platformRows(platformData)
+      const moneyTotal = platformTotal(platformData)
+      const readyUsage = !!(usageData && usageData.status === 'ready')
+      const usagePartial = !!(usageData && usageData.status === 'ready' && usageData.partial === true)
+      const total = totalUsageTokens(usageData)
+      const generatedAt = data ? Number(data.generatedAt) : 0
+      const updatedLabel = Number.isFinite(generatedAt) && generatedAt > 0
+        ? `${t('usageUpdated')} ${relativeTime(generatedAt, t, now)}`
+        : ''
+      const refresh = () => { if (usage && typeof usage.refresh === 'function') usage.refresh().catch(() => {}) }
+
+      const wallets = balance && balance.status === 'ready' && Array.isArray(balance.wallets) ? balance.wallets : []
+      const bonusWallets = balance && balance.status === 'ready' && Array.isArray(balance.bonusWallets) ? balance.bonusWallets : []
+      const balanceNote = !balance || balance.status === 'failed' || balance.status === 'unavailable'
+        ? t('balanceUnavailable')
+        : balance.status === 'signed-out'
+          ? t('balanceSignedOut')
+          : wallets.length === 0 ? t('balanceUnavailable') : ''
+      const usageNote = !usageData || usageData.status === 'unavailable' || usageData.status === 'failed'
+        ? t('usageUnavailable')
+        : t('noUsage')
+      const platformNote = platformData && platformData.status === 'disabled'
+        ? t('platformDisabled')
+        : !platformData || platformData.status === 'unavailable' || platformData.status === 'failed'
+          ? t('platformUnavailable')
+          : platformData.status === 'signed-out'
+            ? t('platformSignedOut')
+            : moneyRows.length === 0 ? t('noPlatformSpend') : ''
+      const spendWindow = moneyTotal ? t('today') : t('last24h')
+      const spendAmount = moneyTotal ? formatMoney(moneyTotal.cost, moneyTotal.currency) : readyUsage ? formatTokens(total) : '—'
+      const spendTitle = moneyTotal ? t('platformSpendTitle') : t('spendTitle')
+
+      const walletRow = (wallet, key) => h('div', { key, className: 'sa-usage-wallet' },
+        h('span', null, wallet.currency),
+        h('strong', null, formatWallet(wallet)))
+
+      return h('div', { className: 'sa-usage', ref: rootRef },
+        h('button', {
+          type: 'button',
+          className: 'sa-chip sa-usage-chip sa-usage-balance',
+          title: `${t('balanceTitle')}${balanceNote ? ` — ${balanceNote}` : ''}`,
+          'aria-label': t('balanceTitle'),
+          'aria-haspopup': 'dialog',
+          'aria-expanded': open ? 'true' : 'false',
+          onClick: () => setOpen((value) => !value),
+        },
+        h('span', { className: 'sa-usage-amount' }, balanceText(balance)),
+        h('svg', {
+          className: 'sa-usage-caret', width: 10, height: 10, viewBox: '0 0 24 24', fill: 'none',
+          stroke: 'currentColor', strokeWidth: 2.2, strokeLinecap: 'round', 'aria-hidden': true,
+        }, h('path', { d: 'M8 10l4 4 4-4' }))),
+        h('button', {
+          type: 'button',
+          className: 'sa-chip sa-usage-chip spend sa-usage-spend',
+          title: spendTitle,
+          'aria-label': spendTitle,
+          'aria-haspopup': 'dialog',
+          'aria-expanded': open ? 'true' : 'false',
+          onClick: () => setOpen((value) => !value),
+        },
+        h('span', { className: 'sa-usage-window' }, spendWindow),
+        h('span', { className: 'sa-usage-amount' }, spendAmount)),
+        open && h('div', { className: 'sa-usage-pop', role: 'dialog', 'aria-label': t('usagePanelTitle') },
+          h('div', { className: 'sa-usage-pop-head' },
+            h('span', { className: 'sa-usage-pop-title' }, t('usagePanelTitle')),
+            updatedLabel && h('span', { className: 'sa-usage-pop-time' }, updatedLabel),
+            h('button', {
+              type: 'button', className: 'sa-usage-refresh', title: t('usageRefresh'), 'aria-label': t('usageRefresh'), onClick: refresh,
+            }, h('svg', { width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', 'aria-hidden': true },
+              h('path', { d: 'M20 11a8 8 0 1 0-2.3 5.7' }), h('path', { d: 'M20 4v7h-7' })))),
+          h('div', { className: 'sa-usage-window-note' }, t('differentWindows')),
+          h('div', { className: 'sa-usage-section' },
+            wallets.length > 0
+              ? wallets.map((wallet, index) => walletRow(wallet, `wallet-${index}`))
+              : h('div', { className: 'sa-usage-empty' }, balanceNote),
+            bonusWallets.length > 0 && h('div', { className: 'sa-usage-section' },
+              h('div', { className: 'sa-usage-section-title' }, t('bonusBalance')),
+              bonusWallets.map((wallet, index) => walletRow(wallet, `bonus-${index}`)))),
+          h('div', { className: 'sa-usage-section' },
+            h('div', { className: 'sa-usage-section-title' }, t('apiKeysTitle'), h('span', { className: 'sa-usage-tag' }, t('platformPrivateTag'))),
+            moneyRows.length > 0
+              ? moneyRows.map((row) => h('div', { key: `platform-${row.id}-${row.currency}`, className: 'sa-usage-key' },
+                h('div', { className: 'sa-usage-key-head' },
+                  h('span', { className: 'sa-usage-key-name', title: row.label || row.id },
+                    row.label || t('keyFallback', { id: row.id.slice(0, 6) })),
+                  row.keyType && h('span', { className: 'sa-usage-key-kind' }, row.keyType),
+                  h('span', { className: 'sa-usage-key-total' }, formatMoney(row.cost, row.currency))),
+                row.models.length > 0 && h('div', { className: 'sa-usage-key-detail' }, row.models.join(' · '))))
+              : h('div', { className: 'sa-usage-empty' }, platformNote)),
+          h('div', { className: 'sa-usage-section' },
+            h('div', { className: 'sa-usage-section-title' }, t('rollingLabel'), h('span', { className: 'sa-usage-tag' }, t('localTag'))),
+            rows.length > 0
+              ? rows.map((row) => h('div', { key: row.provider, className: 'sa-usage-key' },
+                h('div', { className: 'sa-usage-key-head' },
+                  h('span', { className: 'sa-usage-key-name', title: row.models.join(', ') },
+                    row.providerName || (row.provider === 'unknown' ? t('unknownProvider') : row.provider)),
+                  h('span', { className: 'sa-usage-key-kind' }, row.kind === 'account' ? t('account') : t('apiKey')),
+                  h('span', { className: 'sa-usage-key-total', title: `${row.totalTokens} tokens` }, formatTokens(row.totalTokens))),
+                h('div', { className: 'sa-usage-key-detail' }, usageBreakdown(row, t)),
+                row.lastAt > 0 && h('div', { className: 'sa-usage-key-detail' }, `${t('usageLastRequest')} ${relativeTime(row.lastAt, t, now)}`)))
+              : h('div', { className: 'sa-usage-empty' }, usageNote),
+            usagePartial && h('div', { className: 'sa-usage-key-detail' }, t('usagePartial'))),
+          h('div', { className: 'sa-usage-note' }, t('usageNote')))
+      )
+    }
+
     /** The header of the panel. */
-    function Header({ t, conversation, statusLabel, onNew, onToggleRail, railOpen, onOpenInDsh, onBack }) {
+    function Header({ t, conversation, statusLabel, usage, now, onNew, onToggleRail, railOpen, onOpenInDsh, onBack }) {
       const isWorker = conversation && conversation.kind === 'worker'
       return h('div', { className: 'sa-top' },
         h('div', { className: 'sa-brand' },
@@ -851,6 +1292,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'sa-title' }, isWorker ? `${t('worker')} · ${conversation.title}` : (conversation ? conversation.title : t('title'))),
             h('div', { className: 'sa-subtitle' }, isWorker ? t('workerBanner') : t('subtitle')))),
         h('div', { className: 'sa-top-meta' },
+          h(UsageWidget, { t, usage, now }),
           conversation && h('span', { className: 'sa-chip', title: conversation.workspacePath || '' },
             h('span', null, t('workspace')),
             h('strong', null, basename(conversation.workspacePath) || t('workspaceFallback'))),
@@ -1290,6 +1732,7 @@ window.__ModuleLoader__.load({
     /** The whole panel. */
     function App({ ctx, t, stockChat, renderSlot, SessionProvider }) {
       const catalog = useCatalog()
+      const usage = useUsage(ctx)
       const now = useNow()
       const [selectedId, setSelectedId] = React.useState(() => {
         try { return window.localStorage.getItem(SELECTED_KEY) || '' } catch { return '' }
@@ -1441,6 +1884,8 @@ window.__ModuleLoader__.load({
           t,
           conversation: selected,
           statusLabel,
+          usage,
+          now,
           railOpen,
           onNew: () => setNewOpen(true),
           onToggleRail: toggleRail,
@@ -1536,6 +1981,17 @@ window.__ModuleLoader__.load({
         answeredCardAfterDismiss,
         readRailExpanded,
         writeRailExpanded,
+        formatTokens,
+        formatWallet,
+        formatMoney,
+        platformRows,
+        platformTotal,
+        balanceText,
+        totalUsageTokens,
+        usageKeyRows,
+        usageBreakdown,
+        usageRequestPath,
+        UsageWidget,
         HistoryRail,
         PendingDecisionItem,
         PendingQuestionCard,

@@ -39,8 +39,18 @@ function objectBody(body) {
   return body !== null && typeof body === 'object' && !Array.isArray(body) ? body : {}
 }
 
+/** The payload served when the host has no billing service mounted. */
+function unavailableBilling() {
+  return {
+    balance: { status: 'unavailable', wallets: [], bonusWallets: [], fetchedAt: Date.now() },
+    usage: { status: 'unavailable', windowHours: 24, since: Date.now() - 24 * 60 * 60 * 1000, keys: [], totalTokens: 0, requests: 0, generatedAt: Date.now() },
+    platform: { status: 'unavailable', keys: [], totals: [], timezoneOffsetSeconds: 0, fetchedAt: Date.now() },
+    generatedAt: Date.now(),
+  }
+}
+
 /** Create the API dispatcher. */
-export function createApi({ orchestrator, origin }) {
+export function createApi({ orchestrator, origin, billing }) {
   /**
    * Resolve one API call.
    * @param {{ method?: string, pathname?: string, query?: Record<string,string>, headers?: Record<string,string|undefined>, body?: unknown }} request
@@ -81,6 +91,13 @@ export function createApi({ orchestrator, origin }) {
           id: decodeURIComponent(parts[1]),
           answer: input.answer,
         }))
+      }
+      if (upper === 'GET' && parts.length === 1 && parts[0] === 'usage') {
+        const locale = typeof query.locale === 'string' && /^[A-Za-z_-]{2,16}$/.test(query.locale) ? query.locale : 'en'
+        const offset = Number(query.tz)
+        const timezoneOffsetSeconds = Number.isFinite(offset) && Math.abs(offset) <= 86_400 ? Math.trunc(offset) : 0
+        if (!billing || typeof billing.summary !== 'function') return result(200, unavailableBilling())
+        return result(200, await billing.summary({ locale, timezoneOffsetSeconds }))
       }
       if (upper === 'POST' && parts.length === 1 && parts[0] === 'conversations') {
         const input = objectBody(body)

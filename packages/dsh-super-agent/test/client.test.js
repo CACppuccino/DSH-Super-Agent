@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import vm from 'node:vm'
 
 /** Load the browser module and return its plugin object. */
-async function loadPlugin({ markdown = true } = {}) {
+async function loadPlugin({ markdown = true, openWidget = false } = {}) {
   const code = await readFile(join(import.meta.dirname, '..', 'client.js'), 'utf8')
   let definition
   const window = { __ModuleLoader__: { load(value) { definition = value } } }
@@ -14,7 +14,7 @@ async function loadPlugin({ markdown = true } = {}) {
   assert.equal(definition.id, '@local/dsh-super-agent')
   const React = {
     createElement: (type, props, ...children) => ({ type, props, children }),
-    useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+    useState: (initial) => [openWidget ? true : typeof initial === 'function' ? initial() : initial, () => {}],
     useEffect: () => {},
     useMemo: (factory) => factory(),
     useRef: () => ({ current: null }),
@@ -131,6 +131,136 @@ test('history groups workers under their parent and keeps orphans separate', asy
   assert.deepEqual(groups[0].workers, [])
   assert.deepEqual(groups[1].workers.map((worker) => worker.id), ['w2', 'w1'])
   assert.deepEqual(orphans.map((worker) => worker.id), ['w3'])
+})
+
+test('usage formatting is compact, currency-aware, and honest about missing data', async () => {
+  const plugin = await loadPlugin()
+  const { formatTokens, formatWallet, balanceText, totalUsageTokens, usageKeyRows, usageBreakdown } = plugin.__internals
+
+  assert.equal(formatTokens(0), '0')
+  assert.equal(formatTokens(942), '942')
+  assert.equal(formatTokens(12_345), '12.3k')
+  assert.equal(formatTokens(4_500_000), '4.5M')
+  assert.equal(formatTokens(2_000_000_000), '2B')
+
+  assert.equal(formatWallet({ currency: 'CNY', balance: '12.34' }), '¥12.34')
+  assert.equal(formatWallet({ currency: 'USD', balance: '1200.5' }), '$1,200.50')
+  assert.equal(formatWallet({ currency: 'EUR', balance: '3' }), 'EUR 3.00')
+  assert.equal(formatWallet(null), '—')
+
+  assert.equal(balanceText(undefined), '—')
+  assert.equal(balanceText({ status: 'signed-out' }), '—')
+  assert.equal(balanceText({ status: 'failed' }), '—')
+  assert.equal(balanceText({ status: 'ready', wallets: [] }), '—')
+  assert.equal(balanceText({ status: 'ready', wallets: [{ currency: 'CNY', balance: '12.34' }] }), '¥12.34')
+
+  assert.equal(totalUsageTokens(undefined), 0)
+  assert.equal(totalUsageTokens({ status: 'failed' }), 0)
+  assert.equal(totalUsageTokens({ status: 'ready', totalTokens: 0, keys: [{ totalTokens: 7 }, { totalTokens: 5 }] }), 12)
+
+  const rows = usageKeyRows({
+    status: 'ready',
+    keys: [
+      { provider: 'small', totalTokens: 5, requests: 1, inputTokens: 5 },
+      { provider: 'large', providerName: 'DeepSeek', kind: 'account', totalTokens: 50, requests: 2, inputTokens: 25, outputTokens: 25, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    ],
+  })
+  assert.deepEqual(rows.map((row) => row.provider), ['large', 'small'])
+  assert.equal(rows[0].kind, 'account')
+  assert.equal(rows[0].providerName, 'DeepSeek')
+
+  const t = (key, values) => values && values.count !== undefined ? `${key}:${values.count}` : key
+  assert.equal(
+    usageBreakdown({ inputTokens: 1200, outputTokens: 300, cacheReadTokens: 0, cacheWriteTokens: 0, requests: 2 }, t),
+    'inputTokens 1.2k · outputTokens 300 · usageRequests:2',
+  )
+})
+
+test('platform spend rows keep only names, opaque ids, and amounts', async () => {
+  const plugin = await loadPlugin()
+  const { formatMoney, platformRows, platformTotal } = plugin.__internals
+  assert.equal(formatMoney(1.7, 'CNY'), '¥1.70')
+  assert.equal(formatMoney(2, 'USD'), '$2.00')
+  assert.equal(formatMoney(3, 'EUR'), 'EUR 3.00')
+  assert.equal(formatMoney(null, 'CNY'), '—')
+
+  const platform = {
+    status: 'ready',
+    totals: [
+      { currency: 'CNY', cost: 3.7 },
+      { currency: 'USD', cost: 0.5 },
+    ],
+    keys: [
+      { id: 'b', label: 'Laptop', keyType: 'NORMAL', currency: 'CNY', cost: 2, models: ['deepseek-flash'], sensitive_id: 'sk-secret' },
+      { id: 'a', label: 'Harness', keyType: 'DSH', currency: 'CNY', cost: 1.7, models: ['deepseek-flash'] },
+    ],
+  }
+  const rows = platformRows(platform)
+  assert.deepEqual(rows.map((row) => row.label), ['Laptop', 'Harness'])
+  assert.equal(Object.hasOwn(rows[0], 'sensitive_id'), false)
+  const total = platformTotal(platform)
+  assert.equal(total.currency, 'CNY')
+  assert.equal(total.cost, 3.7)
+  assert.equal(platformTotal({ status: 'ready', totals: [], keys: [{ id: 'x', currency: 'USD', cost: 1 }] }).currency, 'USD')
+  assert.equal(platformTotal({ status: 'signed-out' }), undefined)
+
+  assert.deepEqual(platformRows({ status: 'ready', keys: [], totals: [] }), [])
+  assert.equal(platformRows({ status: 'ready', keys: [{ id: 'one', label: 'Only', currency: 'CNY', cost: 1 }], totals: [] }).length, 1)
+  assert.equal(platformRows({ status: 'ready', keys: [
+    { id: '1', label: 'A', currency: 'CNY', cost: 1 },
+    { id: '2', label: 'B', currency: 'CNY', cost: 2 },
+    { id: '3', label: 'C', currency: 'CNY', cost: 3 },
+  ], totals: [] }).length, 3)
+})
+
+test('the usage widget renders em dashes without data and a compact total with data', async () => {
+  const plugin = await loadPlugin()
+  const { UsageWidget } = plugin.__internals
+  const t = (key) => key
+
+  const empty = UsageWidget({ t, usage: { status: 'error', data: undefined }, now: 1 })
+  assert.equal(empty.props.className, 'sa-usage')
+  assert.equal(empty.children[0].props.className, 'sa-chip sa-usage-chip sa-usage-balance')
+  assert.equal(empty.children[0].children[0].children[0], '—')
+  assert.equal(empty.children[1].children[1].children[0], '—')
+
+  const ready = UsageWidget({
+    t,
+    now: 2,
+    usage: {
+      status: 'ready',
+      data: {
+        balance: { status: 'ready', wallets: [{ currency: 'CNY', balance: '12.34' }], bonusWallets: [], fetchedAt: 1 },
+        usage: { status: 'ready', totalTokens: 1500, keys: [{ provider: 'deepseek-official', providerName: 'DeepSeek', kind: 'api-key', totalTokens: 1500 }] },
+        platform: {
+          status: 'ready',
+          totals: [{ currency: 'CNY', cost: 3.73 }],
+          keys: [{ id: 'k', label: 'Harness', keyType: 'DSH', currency: 'CNY', cost: 3.73, models: ['deepseek-flash'] }],
+        },
+        generatedAt: 2,
+      },
+    },
+  })
+  assert.equal(ready.children[0].children[0].children[0], '¥12.34')
+  assert.equal(ready.children[1].children[0].children[0], 'today')
+  assert.equal(ready.children[1].children[1].children[0], '¥3.73')
+
+  const tokensOnly = UsageWidget({
+    t,
+    now: 2,
+    usage: {
+      status: 'ready',
+      data: {
+        balance: { status: 'failed', wallets: [], bonusWallets: [], fetchedAt: 1 },
+        usage: { status: 'ready', totalTokens: 1500, keys: [] },
+        platform: { status: 'unavailable', keys: [], totals: [] },
+        generatedAt: 2,
+      },
+    },
+  })
+  assert.equal(tokensOnly.children[0].children[0].children[0], '—')
+  assert.equal(tokensOnly.children[1].children[0].children[0], 'last24h')
+  assert.equal(tokensOnly.children[1].children[1].children[0], '1.5k')
 })
 
 test('relative time and tool details are localizable and compact', async () => {
@@ -375,4 +505,88 @@ test('the inline pending card renders options, free text, and an answered state'
 
   assert.equal(toolDetail('superagent_pending_decision', { action: 'create', question: 'Which channel?' }), 'create · Which channel?')
   assert.equal(toolDetail('superagent_pending_decision', { action: 'resolve', id: 'p1' }), 'resolve · p1')
+})
+
+test('the usage request carries the active locale and a numeric timezone offset', async () => {
+  const plugin = await loadPlugin()
+  const { usageRequestPath } = plugin.__internals
+  const path = usageRequestPath({ locale: { getSnapshot: () => ({ active: 'zh-CN' }) } })
+  assert.match(path, /^\/usage\?locale=zh-CN&tz=-?\d+$/)
+  assert.match(usageRequestPath({}), /^\/usage\?locale=en&tz=-?\d+$/)
+  assert.match(usageRequestPath({ locale: { getSnapshot() { throw new Error('closed') } } }), /^\/usage\?locale=en&tz=-?\d+$/)
+})
+
+test('the open usage popover renders Platform and local rows without throwing', async () => {
+  const plugin = await loadPlugin({ openWidget: true })
+  const t = (key, values) => values && values.count !== undefined ? `${key}:${values.count}` : key
+  const tree = plugin.__internals.UsageWidget({
+    t,
+    now: Date.now(),
+    usage: {
+      status: 'ready',
+      data: {
+        balance: { status: 'ready', wallets: [{ currency: 'CNY', balance: '12.34' }], bonusWallets: [{ currency: 'CNY', balance: '1' }] },
+        usage: {
+          status: 'ready',
+          partial: true,
+          totalTokens: 273_194_717,
+          keys: [{
+            provider: 'deepseek-official', providerName: 'DeepSeek', kind: 'api-key',
+            totalTokens: 273_194_717, inputTokens: 593_488, outputTokens: 703_629,
+            cacheReadTokens: 271_897_600, requests: 773, lastAt: Date.now() - 1_000,
+            models: ['deepseek-flash'],
+          }],
+        },
+        platform: {
+          status: 'ready',
+          totals: [{ currency: 'CNY', cost: 3.0591 }],
+          keys: [
+            { id: 'abc', label: 'MacClaudeCode', keyType: 'NORMAL', currency: 'CNY', cost: 2.4242, models: ['deepseek-flash'] },
+            { id: 'def', label: 'AutoQuant', keyType: 'NORMAL', currency: 'CNY', cost: 0.6349, models: ['deepseek-flash'] },
+            { id: 'ghi', label: 'DeepSeek Harness', keyType: 'DSH', currency: 'CNY', cost: 0, models: ['deepseek-flash'] },
+          ],
+        },
+        generatedAt: Date.now(),
+      },
+    },
+  })
+  assert.equal(tree.children[2].props.className, 'sa-usage-pop')
+  const text = JSON.stringify(tree)
+  assert.match(text, /MacClaudeCode/)
+  assert.match(text, /AutoQuant/)
+  assert.match(text, /DeepSeek Harness/)
+  assert.match(text, /platformPrivateTag/)
+  assert.match(text, /rollingLabel/)
+  assert.match(text, /differentWindows/)
+  assert.match(text, /apiKeysTitle/)
+  assert.equal(text.includes('sensitive_id'), false)
+  assert.equal(text.includes('tracking_id'), false)
+  assert.match(text, /273M/)
+  assert.match(text, /DeepSeek/)
+  assert.match(text, /usagePartial/)
+  assert.equal(text.includes('sk-'), false)
+})
+
+test('a disabled Platform endpoint falls back to the token chip and explains why', async () => {
+  const plugin = await loadPlugin({ openWidget: true })
+  const t = (key) => key
+  const tree = plugin.__internals.UsageWidget({
+    t,
+    now: 1,
+    usage: {
+      status: 'ready',
+      data: {
+        balance: { status: 'ready', wallets: [{ currency: 'CNY', balance: '1.00' }], bonusWallets: [] },
+        usage: { status: 'ready', totalTokens: 1000, keys: [] },
+        platform: { status: 'disabled', keys: [], totals: [] },
+        generatedAt: 1,
+      },
+    },
+  })
+  assert.equal(tree.children[1].children[0].children[0], 'last24h')
+  assert.equal(tree.children[1].children[1].children[0], '1k')
+  const text = JSON.stringify(tree)
+  assert.match(text, /platformDisabled/)
+  assert.match(text, /rollingLabel/)
+  assert.match(text, /differentWindows/)
 })
