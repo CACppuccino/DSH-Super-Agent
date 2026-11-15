@@ -386,3 +386,39 @@ test('worker tag routes persist set/add/remove and expose the many-to-many index
   const unauthorized = await api.request({ method: 'GET', pathname: '/superagent/api/tags', headers: {} })
   assert.equal(unauthorized.status, 403)
 })
+
+test('the polled state payload carries status and running for every worker state', async () => {
+  const { api, orchestrator, host } = await setup()
+  const boot = await api.request({ method: 'POST', pathname: '/superagent/api/bootstrap', headers })
+  const superId = boot.body.activeConversationId
+  const workers = []
+  for (const title of ['Dispatching worker', 'Running worker', 'Waiting worker']) {
+    workers.push(await orchestrator.dispatchTask({ parentId: superId, title, prompt: `Do ${title}.` }))
+  }
+  await orchestrator.store.update((state) => {
+    state.conversations[workers[0].id].status = 'dispatching'
+    state.conversations[workers[1].id].status = 'running'
+    state.conversations[workers[2].id].status = 'waiting'
+  })
+  // The live Agent status is layered over durable status; this is the same
+  // source the panel polls every 2.5 seconds.
+  host.get(workers[1].id).status = 'running'
+
+  const response = await api.request({ method: 'GET', pathname: '/superagent/api/state', headers })
+  assert.equal(response.status, 200)
+  const byId = new Map(response.body.conversations.filter((item) => item.kind === 'worker').map((item) => [item.id, item]))
+  for (const worker of workers) {
+    const view = byId.get(worker.id)
+    assert.equal(typeof view.status, 'string', `${worker.title} has a polled status`)
+    assert.equal(typeof view.running, 'boolean', `${worker.title} has the live running flag`)
+  }
+  assert.deepEqual(
+    Array.from(workers, (worker) => byId.get(worker.id).status),
+    ['dispatching', 'running', 'waiting'],
+  )
+  const running = workers.filter((worker) => {
+    const view = byId.get(worker.id)
+    return view.running === true || view.status === 'running' || view.status === 'dispatching'
+  })
+  assert.equal(running.length, 2, 'dispatching and running count as in progress; waiting does not')
+})

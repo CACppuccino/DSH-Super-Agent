@@ -333,8 +333,12 @@ window.__ModuleLoader__.load({
 .sa-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sa-title-counts { flex: 0 0 auto; display: inline-flex; align-items: baseline; gap: 4px; color: var(--dsw-alias-label-secondary);
   font-size: 11.5px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: 0; }
-.sa-title-count { font-variant-numeric: tabular-nums; }
-.sa-title-sep { color: var(--dsw-alias-label-caption); }
+.sa-worker-summary-total, .sa-worker-summary-running { font-variant-numeric: tabular-nums; }
+.sa-worker-summary-sep { color: var(--dsw-alias-label-caption); }
+.sa-rail-worker-summary { display: inline-flex; align-items: baseline; gap: 4px; max-width: 100%; font-size: 10.5px; font-weight: 500;
+  color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.sa-rail-head-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .sa-subtitle { font-size: 12px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sa-top-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
 .sa-usage { position: relative; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
@@ -1667,15 +1671,33 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * The shared total + running summary used by both the conversation title
+     * and the right-rail header. Running=0 renders only the total: no separator.
+     */
+    function WorkerSummary({ t, stats, placement = 'header', className = 'sa-worker-summary' }) {
+      if (!stats || !Number.isFinite(stats.total) || stats.total <= 0) return null
+      const running = Number.isFinite(stats.running) && stats.running > 0
+      const totalLabel = t('workerCount', { count: stats.total })
+      const runningLabel = running ? t('workerRunningCount', { count: stats.running }) : ''
+      return h('span', {
+        className,
+        'data-sa-worker-stats': placement,
+        'data-sa-worker-total': String(stats.total),
+        'data-sa-worker-running': String(running ? stats.running : 0),
+        title: running ? `${totalLabel} · ${runningLabel}` : totalLabel,
+      },
+      h('span', { className: 'sa-worker-summary-total' }, totalLabel),
+      running && h('span', { className: 'sa-worker-summary-sep' }, '·'),
+      running && h('span', { className: 'sa-worker-summary-running' }, runningLabel))
+    }
+
     /** The header of the panel. */
     function Header({ t, conversation, statusLabel, usage, now, stats, onNew, onToggleRail, railOpen, onOpenInDsh, onBack }) {
       const isWorker = conversation && conversation.kind === 'worker'
       const title = isWorker ? `${t('worker')} · ${conversation.title}` : (conversation ? conversation.title : t('title'))
-      const counts = !isWorker && conversation && stats && stats.total > 0
-        ? h('span', { className: 'sa-title-counts' },
-          h('span', { className: 'sa-title-count' }, t('workerCount', { count: stats.total })),
-          stats.running > 0 && h('span', { className: 'sa-title-sep' }, '·'),
-          stats.running > 0 && h('span', { className: 'sa-title-count sa-title-running' }, t('workerRunningCount', { count: stats.running })))
+      const counts = !isWorker && conversation
+        ? h(WorkerSummary, { t, stats, placement: 'header', className: 'sa-title-counts' })
         : null
       return h('div', { className: 'sa-top' },
         h('div', { className: 'sa-brand' },
@@ -2169,7 +2191,7 @@ window.__ModuleLoader__.load({
 
     /** The conversation history rail with independent conversation and pending sections. */
     function HistoryRail({
-      t, data, selectedId, now, onSelect, onNew, onRefresh, onClose,
+      t, data, selectedId, now, onSelect, onNew, onRefresh, onClose, stats,
       expanded = {}, onToggleSection = () => {}, pending = [], pendingExpandedId, onOpenPending,
       filterTags = [], onToggleTag = () => {}, onClearFilter = () => {},
     }) {
@@ -2186,7 +2208,9 @@ window.__ModuleLoader__.load({
       const pendingOpen = expanded.pending !== false
       return h('aside', { className: 'sa-rail' },
         h('div', { className: 'sa-rail-head' },
-          h('span', { className: 'sa-rail-title' }, t('title')),
+          h('div', { className: 'sa-rail-head-text', 'data-sa-rail-head': '1' },
+            h('span', { className: 'sa-rail-title' }, t('title')),
+            h(WorkerSummary, { t, stats, placement: 'rail', className: 'sa-rail-worker-summary' })),
           h('span', { style: { flex: 1 } }),
           h('button', { type: 'button', className: 'sa-icon-button', title: t('refresh'), onClick: onRefresh, 'aria-label': t('refresh') },
             h('svg', { width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.9, strokeLinecap: 'round' },
@@ -2320,6 +2344,12 @@ window.__ModuleLoader__.load({
         ? conversations.filter((item) => item.kind === 'worker' && item.parentId === selected.id)
         : []
       const stats = selected && selected.kind === 'super' ? workerStats(selectedWorkers) : undefined
+      const railOwner = selected
+        ? (selected.kind === 'super' ? selected : conversations.find((item) => item.id === selected.parentId))
+        : conversations.find((item) => item.kind === 'super' && item.id === (data && data.activeConversationId))
+      const railStats = railOwner && railOwner.kind === 'super'
+        ? workerStats(conversations.filter((item) => item.kind === 'worker' && item.parentId === railOwner.id))
+        : undefined
       const workerTagsSignature = React.useMemo(() => conversations
         .filter((item) => item && item.kind === 'worker')
         .map((item) => `${item.id}:${normalizeTagList(item.tags).join(',')}`)
@@ -2514,6 +2544,7 @@ window.__ModuleLoader__.load({
             data,
             selectedId,
             now,
+            stats: railStats,
             pending,
             filterTags: tagFilter,
             onToggleTag: toggleTagFilter,
@@ -2617,6 +2648,7 @@ window.__ModuleLoader__.load({
         usageBreakdown,
         usageRequestPath,
         UsageWidget,
+        WorkerSummary,
         Header,
         WorkerTagsBar,
         TagFilterBar,

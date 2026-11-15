@@ -613,7 +613,7 @@ test('worker counts separate total from in-progress (dispatching/running) worker
 
 test('the header shows total and running counts without shifting the title', async () => {
   const plugin = await loadPlugin()
-  const { Header } = plugin.__internals
+  const { Header, WorkerSummary } = plugin.__internals
   const t = (key, values) => values && values.count !== undefined ? `${key}:${values.count}` : key
   const base = {
     t,
@@ -628,23 +628,67 @@ test('the header shows total and running counts without shifting the title', asy
     onOpenInDsh: () => {},
     onBack: () => {},
   }
-  const title = Header(base).children[0].children[1].children[0]
+  const header = Header(base)
+  assert.equal(header.props.className, 'sa-top', 'the title and counts live in the same panel header')
+  const title = header.children[0].children[1].children[0]
   assert.equal(title.props.className, 'sa-title')
   assert.equal(title.children[0].props.className, 'sa-title-text')
   assert.equal(title.children[0].children[0], 'Super Agent')
   const counts = title.children[1]
+  assert.equal(counts.type, WorkerSummary)
   assert.equal(counts.props.className, 'sa-title-counts')
-  assert.deepEqual(Array.from(counts.children, (child) => child.children[0]), ['workerCount:12', '·', 'workerRunningCount:3'])
+  assert.equal(counts.props.placement, 'header')
+  assert.equal(counts.props.stats.total, 12)
+  assert.equal(counts.props.stats.running, 3)
+  const summary = WorkerSummary(counts.props)
+  assert.equal(summary.props['data-sa-worker-stats'], 'header')
+  assert.equal(summary.props['data-sa-worker-total'], '12')
+  assert.equal(summary.props['data-sa-worker-running'], '3')
+  assert.deepEqual(Array.from(summary.children, (child) => child.children[0]), ['workerCount:12', '·', 'workerRunningCount:3'])
 
-  const idle = Header({ ...base, stats: { total: 2, running: 0, waiting: 2 } }).children[0].children[1].children[0]
-  const idleCounts = idle.children[1].children.filter(Boolean)
-  assert.equal(idleCounts.length, 1)
-  assert.equal(idleCounts[0].children[0], 'workerCount:2')
+  const idle = WorkerSummary({ t, stats: { total: 2, running: 0, waiting: 2 }, placement: 'header' })
+  assert.equal(idle.props['data-sa-worker-total'], '2')
+  assert.equal(idle.props['data-sa-worker-running'], '0')
+  assert.equal(idle.children.filter(Boolean).length, 1, 'running=0 renders no separator or running label')
+  assert.equal(idle.children[0].children[0], 'workerCount:2')
+  assert.equal(JSON.stringify(idle).includes('·'), false)
 
   const worker = Header({ ...base, conversation: { id: 'w1', kind: 'worker', title: 'Build', workspacePath: '/tmp/work' } }).children[0].children[1].children[0]
   assert.equal(worker.children.filter(Boolean).length, 1, 'worker conversations do not render the Super Agent worker counts')
 
   assert.equal(Header({ ...base, conversation: null, stats: undefined }).children[0].children[1].children[0].children.filter(Boolean).length, 1)
+  assert.equal(WorkerSummary({ t, stats: undefined }), null)
+  assert.equal(WorkerSummary({ t, stats: { total: 0, running: 0 } }), null)
+})
+
+test('the right-rail header renders the same total and running summary', async () => {
+  const plugin = await loadPlugin()
+  const { HistoryRail, WorkerSummary } = plugin.__internals
+  const t = (key, values) => values && values.count !== undefined ? `${key}:${values.count}` : key
+  const base = {
+    t,
+    data: { conversations: [{ id: 's1', kind: 'super', title: 'Super Agent', workspacePath: '/tmp/x', status: 'idle', updatedAt: 1 }] },
+    selectedId: 's1', now: 10, onSelect: () => {}, onNew: () => {}, onRefresh: () => {}, onClose: () => {},
+    expanded: {}, pending: [], pendingExpandedId: '', onOpenPending: () => {},
+    filterTags: [], onToggleTag: () => {}, onClearFilter: () => {},
+    stats: { total: 28, running: 2, waiting: 26 },
+  }
+  const rail = HistoryRail(base)
+  const head = rail.children[0]
+  assert.equal(head.props.className, 'sa-rail-head')
+  const headText = head.children[0]
+  assert.equal(headText.props['data-sa-rail-head'], '1')
+  assert.equal(headText.children[0].props.className, 'sa-rail-title')
+  const summaryElement = headText.children[1]
+  assert.equal(summaryElement.type, WorkerSummary)
+  assert.equal(summaryElement.props.placement, 'rail')
+  assert.equal(summaryElement.props.className, 'sa-rail-worker-summary')
+  const summary = WorkerSummary(summaryElement.props)
+  assert.equal(summary.props['data-sa-worker-stats'], 'rail')
+  assert.equal(summary.props['data-sa-worker-total'], '28')
+  assert.equal(summary.props['data-sa-worker-running'], '2')
+  assert.deepEqual(Array.from(summary.children, (child) => child.children[0]), ['workerCount:28', '·', 'workerRunningCount:2'])
+  assert.equal(JSON.stringify(rail).includes('noWorkersWithTags'), false)
 })
 
 test('tag normalization is trimmed, deduped case-insensitively, and bounded', async () => {
