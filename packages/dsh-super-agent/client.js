@@ -47,6 +47,8 @@ window.__ModuleLoader__.load({
         pendingSubmitFailed: '提交回答失败',
         pendingCardHint: '回答会作为用户消息发送给 Super Agent。',
         pendingOptions: '{count} 个选项',
+        pendingUpdated: '已更新 · r{revision}',
+        pendingRevisionTooltip: '第 {revision} 版（上一版为第 {previousRevision} 版）\n上一版问题：{question}\n上一版上下文：{context}\n上一版选项：{options}',
         pendingOpen: '打开待决策项',
         pendingDismiss: '关闭回答卡片',
         expandConversations: '展开对话列表',
@@ -190,6 +192,8 @@ window.__ModuleLoader__.load({
         pendingSubmitFailed: 'Could not submit the answer',
         pendingCardHint: 'Your answer is sent to the Super Agent as a user message.',
         pendingOptions: '{count} options',
+        pendingUpdated: 'Updated · r{revision}',
+        pendingRevisionTooltip: 'Revision {revision} (previous was r{previousRevision})\nPrevious question: {question}\nPrevious context: {context}\nPrevious options: {options}',
         pendingOpen: 'Open pending decision',
         pendingDismiss: 'Dismiss answer card',
         expandConversations: 'Expand conversations',
@@ -539,6 +543,10 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-state-warn-primary); }
 .sa-pending-card.answered .sa-pending-card-label { color: var(--dsw-alias-state-success-primary); }
 .sa-pending-card-check { color: var(--dsw-alias-state-success-primary); font-weight: 700; }
+.sa-pending-updated { display: inline-flex; align-items: center; padding: 0 6px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, var(--dsw-alias-border-l1));
+  color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, transparent);
+  font-size: 10.5px; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
 .sa-pending-card-close { margin-left: auto; }
 .sa-pending-question { font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
 .sa-pending-context { margin-top: 6px; color: var(--dsw-alias-label-secondary); font-size: 12.5px; line-height: 1.55; }
@@ -1324,6 +1332,7 @@ window.__ModuleLoader__.load({
     function unresolvedPending(items) {
       return (Array.isArray(items) ? items : [])
         .filter((item) => item && typeof item === 'object' && item.id && item.question)
+        .filter((item) => item.status !== 'retracted')
         .filter((item) => item.resolved_at === null || item.resolved_at === undefined)
         .slice()
         .sort((left, right) => (Number(right.created_at) || 0) - (Number(left.created_at) || 0))
@@ -2054,8 +2063,26 @@ window.__ModuleLoader__.load({
       const [text, setText] = React.useState('')
       const [busy, setBusy] = React.useState(false)
       const [error, setError] = React.useState('')
+      const retracted = item && item.status === 'retracted'
+      React.useEffect(() => {
+        setSelected('')
+        setText('')
+      }, [item && item.id, item && item.revision])
+      if (retracted) return null
       const answered = typeof answer === 'string' && answer.length > 0
       const options = Array.isArray(item.options) ? item.options : []
+      const revision = Number.isInteger(item.revision) && item.revision > 0 ? item.revision : 1
+      const history = Array.isArray(item.history) ? item.history : []
+      const previous = history.at(-1)
+      const revisionTitle = previous && revision > 1
+        ? t('pendingRevisionTooltip', {
+          revision,
+          previousRevision: Number(previous.revision) || revision - 1,
+          question: clipText(previous.question, 240),
+          context: clipText(previous.context, 240) || '—',
+          options: Array.isArray(previous.options) && previous.options.length > 0 ? clipText(previous.options.join(' · '), 240) : '—',
+        })
+        : ''
       const submit = async () => {
         const value = text.trim() || selected
         if (value.length === 0) {
@@ -2079,6 +2106,7 @@ window.__ModuleLoader__.load({
       },
       h('div', { className: 'sa-pending-card-head' },
         h('span', { className: 'sa-pending-card-label' }, answered ? t('pendingAnswered') : t('pending')),
+        revision > 1 && h('span', { className: 'sa-pending-updated', title: revisionTitle, 'data-sa-pending-revision': String(revision) }, t('pendingUpdated', { revision })),
         answered && h('span', { className: 'sa-pending-card-check' }, '✓'),
         !answered && h('button', {
           type: 'button',
@@ -2137,6 +2165,8 @@ window.__ModuleLoader__.load({
         h('span', { className: 'sa-item-title' }, item.question),
         item.context && h('span', { className: 'sa-item-message' }, clipText(item.context, 120)),
         h('span', { className: 'sa-item-meta' },
+          Number(item.revision) > 1 && h('span', { className: 'sa-badge' }, t('pendingUpdated', { revision: item.revision })),
+          Number(item.revision) > 1 && h('span', null, '·'),
           optionCount > 0 && h('span', null, t('pendingOptions', { count: optionCount })),
           optionCount > 0 && h('span', null, '·'),
           h('span', null, relativeTime(item.created_at, t, now)))))

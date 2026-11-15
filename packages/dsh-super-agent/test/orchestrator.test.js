@@ -231,7 +231,7 @@ test('the pending decision tool creates, lists, and resolves items scoped to its
   const { orchestrator, host, store, superAgent, superConversation, stateDir } = await bootstrapped()
   const pending = superAgent.tools.get('superagent_pending_decision')
   assert.ok(pending, 'the pending decision tool is registered')
-  assert.deepEqual(pending.parameters.properties.action.enum, ['create', 'list', 'resolve'])
+  assert.deepEqual(pending.parameters.properties.action.enum, ['create', 'list', 'resolve', 'update', 'retract'])
 
   const created = await pending.execute({
     action: 'create',
@@ -269,7 +269,7 @@ test('the pending decision tool creates, lists, and resolves items scoped to its
   )
   await assert.rejects(
     () => pending.execute({ action: 'explode' }, { agent: superAgent }),
-    /action must be create, list, or resolve/,
+    /action must be create, list, resolve, update, or retract/,
   )
 
   // The queue is durable across a process-style reload.
@@ -814,4 +814,94 @@ test('the approved quant-research canonical is reused by dispatch', async () => 
   assert.equal(result.theme, 'quant-research')
   assert.equal(orchestrator.store.theme('quant-research').workspaceId, canonical.id)
   assert.equal(orchestrator.store.workspace(canonical.id).retired, false)
+})
+
+test('the pending decision tool updates in place and retracts without answering', async () => {
+  const { orchestrator, superAgent, superConversation } = await bootstrapped()
+  const pending = superAgent.tools.get('superagent_pending_decision')
+  const created = await pending.execute({
+    action: 'create',
+    question: 'Which release?',
+    context: 'First context.',
+    options: ['stable', 'beta'],
+  }, { agent: superAgent })
+  assert.equal(created.item.status, 'open')
+  assert.equal(created.item.revision, 1)
+  assert.deepEqual(created.item.history, [])
+
+  const updated = await pending.execute({
+    action: 'update',
+    id: created.item.id,
+    question: 'Which release channel now?',
+    context: 'New evidence changed the options.',
+    options: ['stable', 'canary'],
+  }, { agent: superAgent })
+  assert.equal(updated.ok, true)
+  assert.equal(updated.changed, true)
+  assert.equal(updated.item.revision, 2)
+  assert.equal(updated.item.status, 'open')
+  assert.equal(updated.item.question, 'Which release channel now?')
+  assert.deepEqual(updated.item.options, ['stable', 'canary'])
+  assert.deepEqual(updated.item.history, [{
+    revision: 1,
+    question: 'Which release?',
+    context: 'First context.',
+    options: ['stable', 'beta'],
+    updated_at: created.item.updated_at,
+  }])
+
+  const listed = await pending.execute({ action: 'list' }, { agent: superAgent })
+  const listedItem = listed.items.find((item) => item.id === created.item.id)
+  assert.equal(listedItem.status, 'open')
+  assert.equal(listedItem.revision, 2)
+  assert.deepEqual(listedItem.history.map((entry) => entry.revision), [1])
+  assert.equal((await pending.execute({ action: 'list', include_resolved: true }, { agent: superAgent })).items.some((item) => item.id === created.item.id), true)
+  assert.equal((await pending.execute({ action: 'list', include_retracted: true }, { agent: superAgent })).items.some((item) => item.id === created.item.id), true)
+
+  const retracted = await pending.execute({
+    action: 'retract',
+    id: created.item.id,
+    reason: 'Decided in conversation; the release choice is moot',
+  }, { agent: superAgent })
+  assert.equal(retracted.ok, true)
+  assert.equal(retracted.changed, true)
+  assert.equal(retracted.item.status, 'retracted')
+  assert.equal(retracted.item.resolved_at, null)
+  assert.equal(retracted.item.answer, '')
+  assert.equal(retracted.item.retract_reason, 'Decided in conversation; the release choice is moot')
+  assert.equal(typeof retracted.item.retracted_at, 'number')
+  assert.equal((await pending.execute({ action: 'list' }, { agent: superAgent })).items.some((item) => item.id === created.item.id), false)
+  assert.equal((await pending.execute({ action: 'list', include_retracted: true }, { agent: superAgent })).items.some((item) => item.id === created.item.id), true)
+  assert.equal((await pending.execute({ action: 'list', include_resolved: true }, { agent: superAgent })).items.some((item) => item.id === created.item.id), false)
+  await assert.rejects(
+    () => pending.execute({ action: 'update', id: created.item.id, question: 'Again?' }, { agent: superAgent }),
+    /retracted and cannot be updated/,
+  )
+  await assert.rejects(
+    () => pending.execute({ action: 'resolve', id: created.item.id, answer: 'stable' }, { agent: superAgent }),
+    /retracted and cannot be answered/,
+  )
+  await assert.rejects(
+    () => pending.execute({ action: 'retract', id: created.item.id }, { agent: superAgent }),
+    /reason is required/,
+  )
+
+  const answered = await pending.execute({ action: 'create', question: 'Answered one?' }, { agent: superAgent })
+  await pending.execute({ action: 'resolve', id: answered.item.id, answer: 'yes' }, { agent: superAgent })
+  await assert.rejects(
+    () => pending.execute({ action: 'update', id: answered.item.id, question: 'Change it?' }, { agent: superAgent }),
+    /resolved and cannot be updated/,
+  )
+  await assert.rejects(
+    () => pending.execute({ action: 'retract', id: answered.item.id, reason: 'Moot' }, { agent: superAgent }),
+    /answered and cannot be retracted/,
+  )
+
+  const reloaded = new Orchestrator({ ctx: orchestrator.ctx, store: new StateStore(join(orchestrator.stateDir, 'state.json')), stateDir: orchestrator.stateDir })
+  await reloaded.load()
+  assert.equal(reloaded.pending.get(created.item.id).status, 'retracted')
+  assert.equal(reloaded.pending.get(created.item.id).revision, 2)
+  assert.equal(reloaded.pending.get(created.item.id).history.length, 1)
+  assert.equal(reloaded.listPendingDecisions({ includeRetracted: true }).length, 1)
+  assert.equal(superConversation.id, reloaded.store.latestSuper().id)
 })

@@ -397,6 +397,7 @@ test('pending helpers keep only unanswered decisions and persist section collaps
     { id: 'old', question: 'Old?', created_at: 10, resolved_at: null },
     { id: 'done', question: 'Done?', created_at: 20, resolved_at: 30, answer: 'yes' },
     { id: 'new', question: 'New?', created_at: 40, resolved_at: undefined },
+    { id: 'withdrawn', question: 'Withdrawn?', created_at: 30, resolved_at: null, status: 'retracted', retract_reason: 'Moot' },
     { id: '', question: 'No id', created_at: 50 },
   ]
   assert.deepEqual(unresolvedPending(pending).map((item) => item.id), ['new', 'old'])
@@ -502,6 +503,36 @@ test('the inline pending card renders options, free text, and an answered state'
   assert.equal(answeredText.includes('textarea'), false)
   assert.equal(answeredText.includes('sa-pending-options'), false)
   assert.equal(answeredText.includes('pendingDismiss'), false, 'the X is only for unanswered cards')
+
+  const revisionT = (key, values) => values && values.question ? `${key}:${values.question}` : key
+  const updated = PendingQuestionCard({
+    t: revisionT,
+    item: {
+      id: 'p1',
+      question: 'Which channel now?',
+      context: 'New evidence.',
+      options: ['stable', 'canary'],
+      status: 'open',
+      revision: 3,
+      history: [
+        { revision: 1, question: 'Which channel?', context: 'Both builds exist.', options: ['stable', 'beta'], updated_at: 1 },
+        { revision: 2, question: 'Which channel v2?', context: 'Old context.', options: ['stable', 'beta'], updated_at: 2 },
+      ],
+    },
+    answer: '',
+    onAnswer: async () => {},
+    onDismiss: () => {},
+  })
+  const updatedText = JSON.stringify(updated)
+  assert.match(updatedText, /Which channel now\?/)
+  assert.match(updatedText, /New evidence\./)
+  assert.match(updatedText, /pendingUpdated/)
+  assert.match(updatedText, /data-sa-pending-revision/)
+  assert.match(updatedText, /Which channel v2\?/, 'tooltip includes the previous version')
+  assert.equal(updatedText.includes('sa-pending-options'), true)
+
+  const retracted = PendingQuestionCard({ t, item: { ...item, status: 'retracted', retract_reason: 'Moot' }, answer: '', onAnswer: async () => {}, onDismiss: () => {} })
+  assert.equal(retracted, null, 'retracted cards are never actionable')
 
   assert.equal(toolDetail('superagent_pending_decision', { action: 'create', question: 'Which channel?' }), 'create · Which channel?')
   assert.equal(toolDetail('superagent_pending_decision', { action: 'resolve', id: 'p1' }), 'resolve · p1')

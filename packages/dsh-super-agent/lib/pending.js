@@ -17,6 +17,7 @@ export const PENDING_CONTEXT_LIMIT = 16000
 export const PENDING_OPTION_LIMIT = 200
 export const PENDING_OPTIONS_MAX = 8
 export const PENDING_ANSWER_LIMIT = 16000
+export const PENDING_RETRACT_REASON_LIMIT = 2000
 
 /** True when `value` is a non-array object. */
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -50,6 +51,25 @@ export function emptyPending() {
   return { version: PENDING_VERSION, items: {}, updatedAt: null }
 }
 
+/** Normalize one preserved previous version. */
+function normalizeHistory(value) {
+  if (!Array.isArray(value)) return []
+  const history = []
+  for (const entry of value) {
+    if (!isRecord(entry)) continue
+    const question = textOf(entry.question, PENDING_QUESTION_LIMIT)
+    if (question.length === 0) continue
+    history.push({
+      revision: Number.isSafeInteger(entry.revision) && entry.revision > 0 ? entry.revision : 1,
+      question,
+      context: textOf(entry.context, PENDING_CONTEXT_LIMIT),
+      options: normalizeOptions(entry.options),
+      updated_at: timeOf(entry.updated_at, 0),
+    })
+  }
+  return history
+}
+
 /** Keep only the fields the panel, API, and tool rely on. */
 export function normalizePendingItem(value) {
   if (!isRecord(value) || typeof value.id !== 'string' || value.id.length === 0) return undefined
@@ -57,7 +77,12 @@ export function normalizePendingItem(value) {
   if (question.length === 0) return undefined
   const createdAt = timeOf(value.created_at, Date.now())
   const resolvedAt = value.resolved_at === null || value.resolved_at === undefined ? null : timeOf(value.resolved_at, null)
-  const answer = textOf(value.answer, PENDING_ANSWER_LIMIT)
+  const retracted = value.status === 'retracted'
+  const status = retracted ? 'retracted' : resolvedAt !== null ? 'resolved' : 'open'
+  const revision = Number.isSafeInteger(value.revision) && value.revision > 0 ? value.revision : 1
+  const updatedAt = timeOf(value.updated_at, resolvedAt ?? createdAt)
+  const history = normalizeHistory(value.history)
+  const retractedAt = status === 'retracted' ? timeOf(value.retracted_at, updatedAt) : null
   return {
     id: value.id,
     conversation_id: typeof value.conversation_id === 'string' ? value.conversation_id : '',
@@ -65,8 +90,14 @@ export function normalizePendingItem(value) {
     context: textOf(value.context, PENDING_CONTEXT_LIMIT),
     options: normalizeOptions(value.options),
     created_at: createdAt,
-    resolved_at: resolvedAt,
-    answer: resolvedAt === null ? '' : answer,
+    resolved_at: status === 'resolved' ? resolvedAt : null,
+    answer: status === 'resolved' ? textOf(value.answer, PENDING_ANSWER_LIMIT) : '',
+    status,
+    revision,
+    updated_at: updatedAt,
+    retracted_at: retractedAt,
+    retract_reason: status === 'retracted' ? textOf(value.retract_reason, PENDING_RETRACT_REASON_LIMIT) : '',
+    history,
   }
 }
 
@@ -163,30 +194,43 @@ export class PendingStore {
    * Pending items, newest first. Unresolved decisions are the default; pass
    * `includeResolved` for the durable history.
    */
-  list({ conversationId, includeResolved = false } = {}) {
+  list({ conversationId, includeResolved = false, includeRetracted = false } = {}) {
     return Object.values(this.pending.items)
-      .filter((item) => includeResolved || item.resolved_at === null)
+      .filter((item) => item.status === 'open'
+        || (includeResolved && item.status === 'resolved')
+        || (includeRetracted && item.status === 'retracted'))
       .filter((item) => typeof conversationId !== 'string' || conversationId.length === 0 || item.conversation_id === conversationId)
       .sort((left, right) => right.created_at - left.created_at)
-      .map((item) => ({ ...item, options: item.options.slice() }))
+      .map((item) => ({
+        ...item,
+        options: item.options.slice(),
+        history: item.history.map((entry) => ({ ...entry, options: entry.options.slice() })),
+      }))
   }
 
   /** Register one unanswered decision. */
   async create({ conversationId = '', question, context = '', options = [] } = {}) {
     const text = textOf(question, PENDING_QUESTION_LIMIT)
     if (text.length === 0) throw new Error('question is required')
+    const now = this.now()
     const item = {
       id: `pending-${randomUUID()}`,
       conversation_id: typeof conversationId === 'string' ? conversationId : '',
       question: text,
       context: textOf(context, PENDING_CONTEXT_LIMIT),
       options: normalizeOptions(options),
-      created_at: this.now(),
+      created_at: now,
       resolved_at: null,
       answer: '',
+      status: 'open',
+      revision: 1,
+      updated_at: now,
+      retracted_at: null,
+      retract_reason: '',
+      history: [],
     }
     await this.update((pending) => { pending.items[item.id] = item })
-    return { ...item, options: item.options.slice() }
+    return { ...item, options: item.options.slice(), history: [] }
   }
 
   /**
@@ -200,14 +244,99 @@ export class PendingStore {
     if (typeof conversationId === 'string' && conversationId.length > 0 && existing.conversation_id !== conversationId) {
       throw new Error(`Unknown pending decision: ${key}`)
     }
-    if (existing.resolved_at !== null) return { item: { ...existing, options: existing.options.slice() }, changed: false }
+    if (existing.status === 'retracted') throw new Error('Pending decision is retracted and cannot be answered')
+    if (existing.resolved_at !== null) return { item: this.copyItem(existing), changed: false }
     const text = textOf(answer, PENDING_ANSWER_LIMIT)
     if (text.length === 0) throw new Error('answer is required')
     await this.update((pending) => {
       const stored = pending.items[key]
       stored.resolved_at = this.now()
+      stored.updated_at = stored.resolved_at
       stored.answer = text
+      stored.status = 'resolved'
     })
-    return { item: { ...this.pending.items[key], options: this.pending.items[key].options.slice() }, changed: true }
+    return { item: this.copyItem(this.pending.items[key]), changed: true }
+  }
+
+  /** A defensive copy of one item, including history snapshots. */
+  copyItem(item) {
+    return {
+      ...item,
+      options: item.options.slice(),
+      history: item.history.map((entry) => ({ ...entry, options: entry.options.slice() })),
+    }
+  }
+
+  /**
+   * Revise an open decision in place. The previous question/context/options are
+   * appended to history and revision is bumped; answered and retracted cards
+   * are immutable.
+   */
+  async revise({ id, question, context, options, conversationId } = {}) {
+    const key = typeof id === 'string' ? id : ''
+    const existing = this.pending.items[key]
+    if (!existing) throw new Error(`Unknown pending decision: ${key || '(missing id)'}`)
+    if (typeof conversationId === 'string' && conversationId.length > 0 && existing.conversation_id !== conversationId) {
+      throw new Error(`Unknown pending decision: ${key}`)
+    }
+    if (existing.status !== 'open') throw new Error(`Pending decision is ${existing.status} and cannot be updated`)
+    const hasQuestion = question !== undefined
+    const hasContext = context !== undefined
+    const hasOptions = options !== undefined
+    if (!hasQuestion && !hasContext && !hasOptions) throw new Error('question, context, or options is required')
+    let nextQuestion = existing.question
+    if (hasQuestion) {
+      nextQuestion = textOf(question, PENDING_QUESTION_LIMIT)
+      if (nextQuestion.length === 0) throw new Error('question is required')
+    }
+    const previous = {
+      revision: existing.revision,
+      question: existing.question,
+      context: existing.context,
+      options: existing.options.slice(),
+      updated_at: existing.updated_at,
+    }
+    await this.update((pending) => {
+      const stored = pending.items[key]
+      stored.history.push(previous)
+      stored.question = nextQuestion
+      if (hasContext) stored.context = textOf(context, PENDING_CONTEXT_LIMIT)
+      if (hasOptions) stored.options = normalizeOptions(options)
+      stored.revision += 1
+      stored.updated_at = this.now()
+      stored.status = 'open'
+      stored.resolved_at = null
+      stored.answer = ''
+    })
+    return { item: this.copyItem(this.pending.items[key]), changed: true }
+  }
+
+  /**
+   * Withdraw an open decision because it is moot or was decided in
+   * conversation. No answer is recorded and resolved_at stays null.
+   */
+  async retract({ id, reason, conversationId } = {}) {
+    const key = typeof id === 'string' ? id : ''
+    const existing = this.pending.items[key]
+    if (!existing) throw new Error(`Unknown pending decision: ${key || '(missing id)'}`)
+    if (typeof conversationId === 'string' && conversationId.length > 0 && existing.conversation_id !== conversationId) {
+      throw new Error(`Unknown pending decision: ${key}`)
+    }
+    if (existing.status === 'resolved' || existing.resolved_at !== null) {
+      throw new Error('Pending decision is answered and cannot be retracted')
+    }
+    const text = textOf(reason, PENDING_RETRACT_REASON_LIMIT)
+    if (text.length === 0) throw new Error('reason is required')
+    if (existing.status === 'retracted') return { item: this.copyItem(existing), changed: false }
+    await this.update((pending) => {
+      const stored = pending.items[key]
+      stored.status = 'retracted'
+      stored.retracted_at = this.now()
+      stored.updated_at = stored.retracted_at
+      stored.retract_reason = text
+      stored.resolved_at = null
+      stored.answer = ''
+    })
+    return { item: this.copyItem(this.pending.items[key]), changed: true }
   }
 }

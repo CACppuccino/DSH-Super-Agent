@@ -71,8 +71,9 @@ export function createApi({ orchestrator, origin, billing }) {
       if (upper === 'GET' && parts.length === 1 && parts[0] === 'pending') {
         const conversationId = typeof query.conversationId === 'string' ? query.conversationId : undefined
         const includeResolved = query.includeResolved === '1' || query.includeResolved === 'true'
+        const includeRetracted = query.includeRetracted === '1' || query.includeRetracted === 'true'
         return result(200, {
-          pending: orchestrator.listPendingDecisions({ conversationId, includeResolved }),
+          pending: orchestrator.listPendingDecisions({ conversationId, includeResolved, includeRetracted }),
         })
       }
       if (upper === 'POST' && parts.length === 1 && parts[0] === 'pending') {
@@ -90,6 +91,22 @@ export function createApi({ orchestrator, origin, billing }) {
         return result(200, await orchestrator.answerPendingDecision({
           id: decodeURIComponent(parts[1]),
           answer: input.answer,
+        }))
+      }
+      if (upper === 'POST' && parts.length === 3 && parts[0] === 'pending' && parts[2] === 'update') {
+        const input = objectBody(body)
+        return result(200, await orchestrator.updatePendingDecision({
+          id: decodeURIComponent(parts[1]),
+          question: input.question,
+          context: typeof input.context === 'string' ? input.context : undefined,
+          options: Array.isArray(input.options) ? input.options : undefined,
+        }))
+      }
+      if (upper === 'POST' && parts.length === 3 && parts[0] === 'pending' && parts[2] === 'retract') {
+        const input = objectBody(body)
+        return result(200, await orchestrator.retractPendingDecision({
+          id: decodeURIComponent(parts[1]),
+          reason: input.reason,
         }))
       }
       if (upper === 'GET' && parts.length === 1 && parts[0] === 'workspaces') {

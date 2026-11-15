@@ -34,7 +34,7 @@ Tools:
 - superagent_workspaces: inventory workspaces and proposed theme groups (action "list"), list the persisted theme registry (action "themes"), assign a theme to an existing workspace (action "assign"), or classify a task description into the best theme/workspace (action "suggest").
 - superagent_create_conversation: open another Super Agent conversation for a separate long-running thread.
 - superagent_list_conversations: list Super Agent conversations and workers.
-- superagent_pending_decision: register a question the user must decide (action "create"), list unanswered decisions (action "list"), or mark one resolved (action "resolve"). The panel shows each unresolved decision inline with option buttons and a free-text answer, and returns the user's answer as a user message in this conversation.
+- superagent_pending_decision: register a question the user must decide (action "create"), list decisions (action "list"), mark one resolved (action "resolve"), revise the same open card in place (action "update" with new question/context/options; revision and history are preserved), or withdraw an open card without answering it (action "retract" with a required reason). The panel shows each unresolved decision inline; retracted and answered cards are not actionable.
 
 Planning tools such as todo_write and the goal tools stay available; they do not touch the host.
 
@@ -472,17 +472,19 @@ const PENDING_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    action: { type: 'string', enum: ['create', 'list', 'resolve'], description: 'create registers a question; list returns unanswered decisions; resolve marks one answered.' },
-    question: { type: 'string', description: 'For create: the decision or question the user must answer.' },
-    context: { type: 'string', description: 'For create: optional background, trade-offs, or details shown under the question.' },
+    action: { type: 'string', enum: ['create', 'list', 'resolve', 'update', 'retract'], description: 'create registers a question; list returns decisions; resolve records the user answer; update revises an open card in place; retract withdraws an open card without answering.' },
+    question: { type: 'string', description: 'For create/update: the decision or question the user must answer.' },
+    context: { type: 'string', description: 'For create/update: optional background, trade-offs, or details shown under the question.' },
     options: {
       type: 'array',
       items: { type: 'string' },
-      description: 'For create: optional answer choices rendered as buttons. Omit for free text only.',
+      description: 'For create/update: optional answer choices rendered as buttons. Omit for free text only.',
     },
-    id: { type: 'string', description: 'For resolve: the pending decision id returned by create or list.' },
+    id: { type: 'string', description: 'For resolve/update/retract: the pending decision id returned by create or list.' },
     answer: { type: 'string', description: 'For resolve: the answer to record.' },
-    include_resolved: { type: 'boolean', description: 'For list: include already answered decisions. Defaults to false.' },
+    reason: { type: 'string', description: 'For retract: required short reason the card is no longer actionable. No answer is recorded.' },
+    include_resolved: { type: 'boolean', description: 'For list: include answered decisions. Defaults to false.' },
+    include_retracted: { type: 'boolean', description: 'For list: include retracted decisions. Defaults to false.' },
   },
   required: ['action'],
 }
@@ -1437,15 +1439,51 @@ export class Orchestrator {
     return item
   }
 
-  /** List durable decisions; unresolved only unless asked otherwise. */
-  listPendingDecisions({ conversationId, includeResolved = false } = {}) {
-    return this.pending.list({ conversationId, includeResolved: includeResolved === true })
+  /** List durable decisions; open only unless answered/retracted are requested. */
+  listPendingDecisions({ conversationId, includeResolved = false, includeRetracted = false } = {}) {
+    return this.pending.list({
+      conversationId,
+      includeResolved: includeResolved === true,
+      includeRetracted: includeRetracted === true,
+    })
   }
 
   /** Resolve one decision without delivering a message (the tool's own path). */
   async resolvePendingDecision({ id, answer, conversationId } = {}) {
     const scoped = typeof conversationId === 'string' && conversationId.length > 0 ? conversationId : undefined
     const { item, changed } = await this.pending.resolve({ id, answer, conversationId: scoped })
+    return { ok: true, item, changed }
+  }
+
+  /** Revise an open decision in place, preserving the previous version. */
+  async updatePendingDecision({ id, question, context, options, conversationId } = {}) {
+    const scoped = typeof conversationId === 'string' && conversationId.length > 0 ? conversationId : undefined
+    const { item, changed } = await this.pending.revise({ id, question, context, options, conversationId: scoped })
+    if (changed) {
+      await this.store.update((state) => {
+        const stored = state.conversations[item.conversation_id]
+        if (stored) {
+          stored.updatedAt = this.now()
+          stored.lastMessage = `Pending decision updated: ${clip(item.question, 120)}`
+        }
+      })
+    }
+    return { ok: true, item, changed }
+  }
+
+  /** Withdraw an open decision without recording an answer. */
+  async retractPendingDecision({ id, reason, conversationId } = {}) {
+    const scoped = typeof conversationId === 'string' && conversationId.length > 0 ? conversationId : undefined
+    const { item, changed } = await this.pending.retract({ id, reason, conversationId: scoped })
+    if (changed) {
+      await this.store.update((state) => {
+        const stored = state.conversations[item.conversation_id]
+        if (stored) {
+          stored.updatedAt = this.now()
+          stored.lastMessage = `Pending decision retracted: ${clip(item.question, 120)}`
+        }
+      })
+    }
     return { ok: true, item, changed }
   }
 
@@ -1456,8 +1494,9 @@ export class Orchestrator {
   async answerPendingDecision({ id, answer } = {}) {
     const existing = this.pending.get(typeof id === 'string' ? id : '')
     if (!existing) throw new Error(`Unknown pending decision: ${id ?? '(missing id)'}`)
+    if (existing.status === 'retracted') throw new Error('Pending decision is retracted and cannot be answered')
     if (existing.resolved_at !== null) {
-      return { item: { ...existing, options: existing.options.slice() }, delivered: false, conversationId: existing.conversation_id }
+      return { item: this.pending.copyItem(existing), delivered: false, conversationId: existing.conversation_id }
     }
     const conversation = this.requireSuper(existing.conversation_id)
     if (typeof answer !== 'string' || answer.trim().length === 0) throw new Error('answer is required')
@@ -1485,6 +1524,7 @@ export class Orchestrator {
       await this.pending.update((pending) => {
         const stored = pending.items[item.id]
         if (stored) {
+          stored.status = 'open'
           stored.resolved_at = null
           stored.answer = ''
         }
@@ -1495,7 +1535,7 @@ export class Orchestrator {
   }
 
   /** The `superagent_pending_decision` tool implementation. */
-  async pendingDecision({ conversationId, action, question, context, options, id, answer, includeResolved } = {}) {
+  async pendingDecision({ conversationId, action, question, context, options, id, answer, reason, includeResolved, includeRetracted } = {}) {
     switch (action) {
       case 'create': {
         const item = await this.createPendingDecision({ conversationId, question, context, options })
@@ -1504,14 +1544,18 @@ export class Orchestrator {
       case 'list':
         return {
           ok: true,
-          items: this.listPendingDecisions({ conversationId, includeResolved }),
+          items: this.listPendingDecisions({ conversationId, includeResolved, includeRetracted }),
         }
       case 'resolve': {
         const outcome = await this.resolvePendingDecision({ id, answer, conversationId })
         return outcome
       }
+      case 'update':
+        return this.updatePendingDecision({ id, question, context, options, conversationId })
+      case 'retract':
+        return this.retractPendingDecision({ id, reason, conversationId })
       default:
-        throw new Error('action must be create, list, or resolve')
+        throw new Error('action must be create, list, resolve, update, or retract')
     }
   }
 
@@ -1743,7 +1787,7 @@ export class Orchestrator {
         EMPTY_SCHEMA,
         async () => orchestrator.listConversations()),
       tool('superagent_pending_decision',
-        'Ask the user to decide something without a round trip: action "create" registers an inline question card (optional context and option buttons) for this Super Agent conversation. Action "list" returns unanswered decisions; action "resolve" records an answer. The panel delivers the user\'s answer back to this conversation as a user message.',
+        'Ask the user to decide something without a round trip: action "create" registers an inline question card (optional context and option buttons) for this Super Agent conversation. Action "list" returns open decisions (optionally answered/retracted); action "resolve" records an answer. Action "update" revises the same open card in place with new question/context/options and bumps revision; action "retract" withdraws an open card without recording an answer. The panel delivers an answer back to this conversation as a user message.',
         PENDING_SCHEMA,
         async (args) => orchestrator.pendingDecision({
           conversationId,
@@ -1753,7 +1797,9 @@ export class Orchestrator {
           options: args.options,
           id: args.id,
           answer: args.answer,
+          reason: args.reason,
           includeResolved: args.include_resolved === true,
+          includeRetracted: args.include_retracted === true,
         })),
     ]
   }

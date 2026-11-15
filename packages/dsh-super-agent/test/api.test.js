@@ -546,3 +546,95 @@ test('workspace retirement routes hide, resolve, and reactivate without deleting
   assert.equal(unauthorized.status, 403)
   assert.equal(boot.status, 200)
 })
+
+test('pending update and retract routes revise and withdraw cards', async () => {
+  const { api } = await setup()
+  const boot = await api.request({ method: 'POST', pathname: '/superagent/api/bootstrap', headers })
+  assert.equal(boot.status, 200)
+  const created = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/pending',
+    headers,
+    body: { question: 'Old question?', context: 'Old context.', options: ['A', 'B'] },
+  })
+  assert.equal(created.status, 200)
+  const id = created.body.item.id
+  assert.equal(created.body.item.status, 'open')
+  assert.equal(created.body.item.revision, 1)
+
+  const updated = await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/pending/${id}/update`,
+    headers,
+    body: { question: 'New question?', context: 'New context.', options: ['A', 'C'] },
+  })
+  assert.equal(updated.status, 200)
+  assert.equal(updated.body.item.revision, 2)
+  assert.equal(updated.body.item.question, 'New question?')
+  assert.equal(updated.body.item.history.length, 1)
+  assert.equal(updated.body.item.history[0].question, 'Old question?')
+
+  const listed = await api.request({ method: 'GET', pathname: '/superagent/api/pending', headers })
+  assert.equal(listed.body.pending[0].status, 'open')
+  assert.equal(listed.body.pending[0].revision, 2)
+  assert.equal(listed.body.pending[0].history.length, 1)
+
+  const retracted = await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/pending/${id}/retract`,
+    headers,
+    body: { reason: 'Superseded by a later decision' },
+  })
+  assert.equal(retracted.status, 200)
+  assert.equal(retracted.body.item.status, 'retracted')
+  assert.equal(retracted.body.item.resolved_at, null)
+  assert.equal(retracted.body.item.answer, '')
+  assert.equal(retracted.body.item.retract_reason, 'Superseded by a later decision')
+  assert.equal(typeof retracted.body.item.retracted_at, 'number')
+
+  const openOnly = await api.request({ method: 'GET', pathname: '/superagent/api/pending', headers })
+  assert.deepEqual(openOnly.body.pending, [])
+  const withRetracted = await api.request({
+    method: 'GET',
+    pathname: '/superagent/api/pending',
+    query: { includeRetracted: '1' },
+    headers,
+  })
+  assert.deepEqual(withRetracted.body.pending.map((item) => item.id), [id])
+  const withResolved = await api.request({
+    method: 'GET',
+    pathname: '/superagent/api/pending',
+    query: { includeResolved: '1' },
+    headers,
+  })
+  assert.deepEqual(withResolved.body.pending, [])
+
+  const answered = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/pending',
+    headers,
+    body: { question: 'Answered?' },
+  })
+  await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/pending/${answered.body.item.id}/resolve`,
+    headers,
+    body: { answer: 'Yes' },
+  })
+  const updateAnswered = await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/pending/${answered.body.item.id}/update`,
+    headers,
+    body: { question: 'Change?' },
+  })
+  assert.equal(updateAnswered.status, 400)
+  assert.match(updateAnswered.body.error, /resolved and cannot be updated/)
+  const retractAnswered = await api.request({
+    method: 'POST',
+    pathname: `/superagent/api/pending/${answered.body.item.id}/retract`,
+    headers,
+    body: { reason: 'Moot' },
+  })
+  assert.equal(retractAnswered.status, 400)
+  assert.match(retractAnswered.body.error, /answered and cannot be retracted/)
+})
