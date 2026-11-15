@@ -92,6 +92,28 @@ export function createApi({ orchestrator, origin, billing }) {
           answer: input.answer,
         }))
       }
+      if (upper === 'GET' && parts.length === 1 && parts[0] === 'workspaces') {
+        return result(200, await orchestrator.workspaceInventory())
+      }
+      if (upper === 'GET' && parts.length === 2 && parts[0] === 'workspaces' && parts[1] === 'suggest') {
+        return result(200, await orchestrator.suggestTheme({
+          description: typeof query.description === 'string' ? query.description : undefined,
+          title: typeof query.title === 'string' ? query.title : undefined,
+        }))
+      }
+      if (upper === 'GET' && parts.length === 1 && parts[0] === 'themes') {
+        return result(200, { ok: true, themes: orchestrator.listThemes() })
+      }
+      if (upper === 'POST' && parts.length === 1 && parts[0] === 'themes') {
+        const input = objectBody(body)
+        const theme = await orchestrator.assignTheme({
+          theme: input.theme,
+          workspaceId: typeof input.workspaceId === 'string' ? input.workspaceId : undefined,
+          title: typeof input.title === 'string' ? input.title : undefined,
+          description: typeof input.description === 'string' ? input.description : undefined,
+        })
+        return result(200, { ok: true, theme })
+      }
       if (upper === 'GET' && parts.length === 1 && parts[0] === 'tags') {
         return result(200, orchestrator.listWorkerTags())
       }

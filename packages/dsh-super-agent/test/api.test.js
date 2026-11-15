@@ -422,3 +422,65 @@ test('the polled state payload carries status and running for every worker state
   })
   assert.equal(running.length, 2, 'dispatching and running count as in progress; waiting does not')
 })
+
+test('workspace and theme routes expose inventory, assignment, and suggestion', async () => {
+  const { api, orchestrator } = await setup()
+  const boot = await api.request({ method: 'POST', pathname: '/superagent/api/bootstrap', headers })
+  assert.equal(boot.status, 200)
+  const workspace = await orchestrator.createWorkspace({ title: 'Memory Hub' })
+
+  const assigned = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/themes',
+    headers,
+    body: {
+      theme: 'memory',
+      workspaceId: workspace.id,
+      title: 'Memory systems',
+      description: 'Cloudflare memory sync, project memories, summaries, and notes.',
+    },
+  })
+  assert.equal(assigned.status, 200)
+  assert.equal(assigned.body.theme.id, 'memory')
+  assert.equal(assigned.body.theme.workspaceId, workspace.id)
+
+  const themes = await api.request({ method: 'GET', pathname: '/superagent/api/themes', headers })
+  assert.equal(themes.status, 200)
+  assert.equal(themes.body.themes.length >= 7, true, 'known taxonomy entries are persisted even before assignment')
+  const memoryTheme = themes.body.themes.find((theme) => theme.id === 'memory')
+  assert.equal(memoryTheme.workspace.path, workspace.path)
+
+  const inventory = await api.request({ method: 'GET', pathname: '/superagent/api/workspaces', headers })
+  assert.equal(inventory.status, 200)
+  const row = inventory.body.workspaces.find((item) => item.id === workspace.id)
+  assert.equal(row.title, 'Memory Hub')
+  assert.equal(row.workerCount, 0)
+  assert.equal(row.empty, true)
+  assert.equal(row.theme, 'memory')
+  assert.equal(inventory.body.groups.find((group) => group.theme.id === 'memory').canonicalId, workspace.id)
+
+  const suggestion = await api.request({
+    method: 'GET',
+    pathname: '/superagent/api/workspaces/suggest',
+    query: { description: 'Deploy the Cloudflare memory sync backend' },
+    headers,
+  })
+  assert.equal(suggestion.status, 200)
+  assert.equal(suggestion.body.theme.id, 'memory')
+  assert.equal(suggestion.body.workspace.id, workspace.id)
+
+  const state = await api.request({ method: 'GET', pathname: '/superagent/api/state', headers })
+  assert.equal(state.body.themes.some((theme) => theme.id === 'memory'), true)
+
+  const missing = await api.request({
+    method: 'POST',
+    pathname: '/superagent/api/themes',
+    headers,
+    body: { theme: 'x', workspaceId: 'missing' },
+  })
+  assert.equal(missing.status, 404)
+  assert.match(missing.body.error, /Workspace not found/)
+
+  const unauthorized = await api.request({ method: 'GET', pathname: '/superagent/api/workspaces', headers: {} })
+  assert.equal(unauthorized.status, 403)
+})

@@ -16,7 +16,7 @@ const PROGRESS_LIMIT = 80
 
 /** An empty, valid state document. */
 export function emptyState() {
-  return { version: STATE_VERSION, conversations: {}, workspaces: {}, updatedAt: null }
+  return { version: STATE_VERSION, conversations: {}, workspaces: {}, themes: {}, updatedAt: null }
 }
 
 /** True when `value` is a non-array object. */
@@ -94,6 +94,21 @@ function normalizeWorkspace(value) {
   }
 }
 
+/** Keep only the fields the theme registry and discovery tools rely on. */
+function normalizeTheme(value) {
+  if (!isRecord(value) || typeof value.id !== 'string' || value.id.trim().length === 0) return undefined
+  const id = value.id.trim()
+  const createdAt = timeOf(value.createdAt, Date.now())
+  return {
+    id,
+    title: typeof value.title === 'string' && value.title.trim() ? value.title.trim() : id,
+    description: typeof value.description === 'string' ? value.description.trim() : '',
+    workspaceId: typeof value.workspaceId === 'string' ? value.workspaceId : '',
+    createdAt,
+    updatedAt: timeOf(value.updatedAt, createdAt),
+  }
+}
+
 /** Validate an on-disk document, dropping records that cannot be trusted. */
 export function normalizeState(raw) {
   if (!isRecord(raw)) return emptyState()
@@ -108,6 +123,12 @@ export function normalizeState(raw) {
     for (const value of Object.values(raw.workspaces)) {
       const workspace = normalizeWorkspace(value)
       if (workspace) state.workspaces[workspace.id] = workspace
+    }
+  }
+  if (isRecord(raw.themes)) {
+    for (const value of Object.values(raw.themes)) {
+      const theme = normalizeTheme(value)
+      if (theme) state.themes[theme.id] = theme
     }
   }
   state.updatedAt = typeof raw.updatedAt === 'number' ? raw.updatedAt : null
@@ -201,6 +222,16 @@ export class StateStore {
   /** All workspace records, newest first. */
   workspaces() {
     return Object.values(this.state.workspaces).sort((a, b) => b.createdAt - a.createdAt)
+  }
+
+  /** One theme registry record by normalized id, if known. */
+  theme(id) {
+    return this.state.themes[id]
+  }
+
+  /** All theme registry records, newest first. */
+  themes() {
+    return Object.values(this.state.themes).sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
   /** The most recently updated Super Agent conversation, if any. */

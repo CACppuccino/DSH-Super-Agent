@@ -8,7 +8,7 @@
  * `index.js` wires the real Cordis services in.
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readdir } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { PendingStore } from './pending.js'
@@ -30,7 +30,8 @@ Tools:
 - superagent_worker_output: read a worker's latest output and recent progress.
 - superagent_worker_tags: set, add, remove, or list short tags on workers (up to ${MAX_WORKER_TAGS} per worker). Tags persist and help the user group and filter related work.
 - superagent_stop_worker: stop a worker that is no longer needed.
-- superagent_create_workspace: create a workspace without starting a worker.
+- superagent_create_workspace: create a workspace without starting a worker. Prefer theme reuse; register a new workspace with superagent_workspaces assign.
+- superagent_workspaces: inventory workspaces and proposed theme groups (action "list"), list the persisted theme registry (action "themes"), assign a theme to an existing workspace (action "assign"), or classify a task description into the best theme/workspace (action "suggest").
 - superagent_create_conversation: open another Super Agent conversation for a separate long-running thread.
 - superagent_list_conversations: list Super Agent conversations and workers.
 - superagent_pending_decision: register a question the user must decide (action "create"), list unanswered decisions (action "list"), or mark one resolved (action "resolve"). The panel shows each unresolved decision inline with option buttons and a free-text answer, and returns the user's answer as a user message in this conversation.
@@ -41,7 +42,7 @@ Working rules:
 1. Converse in the user's language. Greetings, explanations, and questions you can answer from context need no tools.
 2. If a request needs any host action, dispatch a worker. Do not do it yourself, even when it looks small or faster.
 3. Dispatch brief: give the worker a short title, a complete self-contained brief, and an existing workspace or a new workspace request. Include the goal, relevant paths, constraints, expected output, and how to report completion.
-4. Prefer an existing workspace when the task belongs to it. Use new_workspace when the task deserves its own directory. Never guess a user's project path; ask or use the requested path.
+4. Workspace discipline: classify every task into one theme before dispatching (quant-research, dsh-plugin, infra-ops, memory, windows-node, backup, or a more specific theme). When unsure, call superagent_workspaces with action "suggest" or "themes". Always pass theme to superagent_dispatch_task. A theme with a registered workspace is reused automatically for a new worker conversation. Only request new_workspace when the work is a genuinely separate deliverable or the theme's workspace cannot hold it; if the theme is unknown or has no registered workspace, include a justification explaining why a new directory is needed. Never create a workspace silently: report the dispatch result's theme and workspace_created fields to the user.
 5. After dispatch, tell the user which worker you started and what happens next. Do not claim work is done before a worker reports it.
 6. Worker progress arrives as notices in this conversation. Relay only meaningful updates: a result, a blocker, a decision the user must make, or a notable milestone. Combine multiple notices into one short update.
 7. If a worker asks a question, either answer it from the conversation context, send a follow-up, or ask the user. Do not invent an answer.
@@ -65,6 +66,116 @@ Work autonomously in the workspace you were given. The Super Agent, not the user
 
 /** Human-readable statuses used by the UI and notices. */
 const STATUS = new Set(['dispatching', 'running', 'waiting', 'needs_input', 'failed', 'stopped', 'paused'])
+
+/** Default classification when no theme is supplied or nothing matches. */
+export const DEFAULT_THEME = 'misc'
+
+/**
+ * The proposed theme taxonomy. These are discovery defaults, not a closed
+ * enum: `superagent_workspaces assign` can register any other theme id.
+ *
+ * Order matters for the keyword suggestion fallback: more specific themes
+ * (memory, windows, backup) come before the broad research/plugin/ops groups.
+ */
+export const THEME_CATALOG = [
+  {
+    id: 'memory',
+    title: 'Memory systems',
+    description: 'Project memory, summaries, notes, Cloudflare sync, and second-Mac memory deployment.',
+    keywords: ['memory', 'memories', 'cloudflare', 'sync', 'summary', 'summaries', 'notes', 'smartwork', 'phase4'],
+  },
+  {
+    id: 'windows-node',
+    title: 'Windows / node machine',
+    description: 'Windows desktop, WSL/node feasibility, reachability, and cross-machine checks.',
+    keywords: ['windows', 'win11', 'win10', 'powershell', 'wsl', 'cross-machine', 'reachability'],
+  },
+  {
+    id: 'backup',
+    title: 'Backup and recovery',
+    description: 'Backups, archives, retention, restore checks, and rollback plans.',
+    keywords: ['backup', 'restore', 'archive', 'retention', 'snapshot', 'rollback'],
+  },
+  {
+    id: 'quant-research',
+    title: 'Quant research',
+    description: 'Quant strategies, data analysis, research pipelines, backtests, and market studies.',
+    keywords: ['quant', 'quantresearch', 'backtest', 'strategy', 'alpha', 'market', 'trading', 'factor', 'sharpe', 'qr-'],
+  },
+  {
+    id: 'dsh-plugin',
+    title: 'DSH plugin development',
+    description: 'DeepSeek Harness plugins, Super Agent panel, dsh-remote, iOS client, and plugin packaging.',
+    keywords: ['dsh', 'superagent', 'super-agent', 'super agent', 'plugin', 'panel', 'harness', 'remote', 'ios'],
+  },
+  {
+    id: 'infra-ops',
+    title: 'Infrastructure and ops',
+    description: 'Servers, networks, storage, health checks, deployment, and diagnostics.',
+    keywords: ['infra', 'ops', 'network', 'wifi', 'lan', 'disk', 'storage', 'kioxia', 'runner', 'health', 'deploy', 'server', 'diagnosis'],
+  },
+  {
+    id: DEFAULT_THEME,
+    title: 'Miscellaneous',
+    description: 'One-off tasks that do not belong to another theme.',
+    keywords: [],
+  },
+]
+
+/** Stop words ignored by the description-to-theme matcher. */
+const THEME_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'this', 'that', 'into', 'task', 'work', 'worker', 'workers',
+  'new', 'user', 'please', 'should', 'would', 'could', 'about', 'using', 'use', 'make', 'add', 'fix', 'project', 'projects', 'system', 'systems',
+])
+
+/** Match a free-form task text against the proposed taxonomy. */
+export function suggestedThemeForText(text) {
+  const haystack = String(text ?? '').toLowerCase()
+  for (const theme of THEME_CATALOG) {
+    if (theme.id === DEFAULT_THEME) continue
+    if (theme.keywords.some((keyword) => keyword.length > 0 && haystack.includes(keyword))) return theme
+  }
+  return THEME_CATALOG.find((theme) => theme.id === DEFAULT_THEME)
+}
+
+/** A known taxonomy definition by id. */
+export function themeDefinition(id) {
+  return THEME_CATALOG.find((theme) => theme.id === id)
+}
+
+/** Normalize a free-form theme label to its stable registry id. */
+export function normalizeThemeId(value, fallback = DEFAULT_THEME) {
+  const text = String(value ?? '').trim()
+  if (text.length === 0) return fallback
+  return slugify(text, fallback)
+}
+
+/** Split text into meaningful lowercase matching terms. */
+function themeTerms(text) {
+  return String(text ?? '')
+    .toLowerCase()
+    .split(/[^a-z0-9\u4e00-\u9fff]+/)
+    .filter((term) => term.length >= 3 && !THEME_STOPWORDS.has(term))
+}
+
+/** Score one registered theme/workspace pair against a task description. */
+function themeMatchScore(record, text) {
+  const haystack = String(text ?? '').toLowerCase()
+  let score = 0
+  for (const [value, weight] of [
+    [record.id, 5],
+    [record.title, 3],
+    [record.description, 2],
+    [record.workspace?.title, 2],
+    [basename(String(record.workspace?.path ?? '')), 1],
+  ]) {
+    for (const term of new Set(themeTerms(value))) {
+      if (haystack.includes(term)) score += weight
+    }
+  }
+  if (haystack.includes(String(record.id ?? '').toLowerCase())) score += 5
+  return score
+}
 
 /**
  * Built-in tools the Super Agent must not call.
@@ -177,6 +288,63 @@ function requireString(value, field) {
   return value.trim()
 }
 
+/** Pick the dominant theme from a workspace's worker titles/tags, if any. */
+function dominantWorkerTheme(workers) {
+  const counts = new Map()
+  for (const worker of Array.isArray(workers) ? workers : []) {
+    const text = [worker.title, ...(Array.isArray(worker.tags) ? worker.tags : [])].join(' ')
+    const theme = suggestedThemeForText(text)
+    if (!theme || theme.id === DEFAULT_THEME) continue
+    counts.set(theme.id, (counts.get(theme.id) || 0) + 1)
+  }
+  let winner = DEFAULT_THEME
+  let best = 0
+  for (const theme of THEME_CATALOG) {
+    const count = counts.get(theme.id) || 0
+    if (count > best) { best = count; winner = theme.id }
+  }
+  return winner
+}
+
+/**
+ * Propose a theme for an inventory workspace. The workspace title and its own
+ * basename win first (worker titles often include incidental words from other
+ * themes); only a generic workspace falls back to its workers' dominant theme.
+ */
+function proposedThemeForWorkspace(record, workers, mainWorkspacePath) {
+  if (record.path === mainWorkspacePath) return DEFAULT_THEME
+  const own = suggestedThemeForText(`${record.title} ${basename(record.path)}`)
+  if (own.id !== DEFAULT_THEME) return own.id
+  return dominantWorkerTheme(workers)
+}
+
+/**
+ * Choose a canonical workspace candidate for a proposed theme group.
+ * Assigned themes win elsewhere; this is the fallback hint for the dry-run
+ * consolidation plan. It prefers workspaces with worker history/artifacts and
+ * penalizes shallow external parent directories such as ~/Projects.
+ */
+function chooseCanonicalWorkspace(items, themeId) {
+  const list = Array.isArray(items) ? items : []
+  const candidates = list.filter((workspace) => !workspace.protected)
+  if (candidates.length === 0) return list[0]?.id
+  const tokens = String(themeId ?? '').split('-').filter((token) => token.length >= 3)
+  const score = (workspace) => {
+    let value = workspace.workerCount * 2 + Math.min(workspace.directoryEntries, 30) / 10 + (workspace.activeWorkers > 0 ? 1 : 0)
+    if (workspace.emptyDirectory) value -= 1.5
+    if (workspace.missing) value -= 2
+    const haystack = `${workspace.title} ${workspace.path}`.toLowerCase()
+    if (tokens.some((token) => haystack.includes(token))) value += 1.5
+    const depth = String(workspace.path ?? '').split('/').filter(Boolean).length
+    if (depth <= 3 && !String(workspace.path ?? '').includes('.dsh')) value -= 6
+    if (workspace.theme === themeId) value += 50
+    return value
+  }
+  return candidates
+    .slice()
+    .sort((left, right) => score(right) - score(left) || right.lastActivity - left.lastActivity)[0]?.id
+}
+
 /** The Super Agent tool schemas. */
 const DISPATCH_SCHEMA = {
   type: 'object',
@@ -184,16 +352,18 @@ const DISPATCH_SCHEMA = {
   properties: {
     title: { type: 'string', description: 'Short task title shown in the conversation history.' },
     prompt: { type: 'string', description: 'Complete, self-contained brief for the worker. Include goal, workspace, constraints, and expected output.' },
-    workspace: { type: 'string', description: 'Existing workspace id, absolute path, or workspace title. Omit to create a new workspace for this task.' },
+    theme: { type: 'string', description: 'Topic/theme for this task (for example quant-research, dsh-plugin, infra-ops, memory, windows-node, backup). Dispatch reuses the theme\'s registered workspace unless new_workspace is explicit. Call superagent_workspaces first when unsure.' },
+    workspace: { type: 'string', description: 'Existing workspace id, absolute path, or workspace title. A registered theme workspace takes precedence unless new_workspace is set.' },
     new_workspace: {
       type: 'object',
       additionalProperties: false,
-      description: 'Create a fresh workspace for this task instead of reusing one.',
+      description: 'Explicitly request a fresh workspace. Prefer theme reuse; a new workspace for an unknown/unmapped theme also needs justification.',
       properties: {
         path: { type: 'string', description: 'Absolute or ~-relative directory. Omit to create one under the Super Agent state directory.' },
         title: { type: 'string', description: 'Display title for the workspace.' },
       },
     },
+    justification: { type: 'string', description: 'Why a new workspace is genuinely needed when the theme is unknown or has no registered workspace. Never create silently.' },
   },
   required: ['title', 'prompt'],
 }
@@ -215,6 +385,19 @@ const CREATE_CONVERSATION_SCHEMA = {
     workspace_id: { type: 'string', description: 'Existing workspace id to host the conversation.' },
     path: { type: 'string', description: 'Absolute or ~-relative directory for a new workspace hosting the conversation.' },
   },
+}
+
+const WORKSPACES_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    action: { type: 'string', enum: ['list', 'themes', 'assign', 'suggest'], description: 'list inventories SA workspaces and proposed groups; themes lists the persisted registry; assign maps a theme to a workspace; suggest matches a task description to the best theme/workspace.' },
+    theme: { type: 'string', description: 'For assign: theme id or label, e.g. quant-research.' },
+    workspace_id: { type: 'string', description: 'For assign: existing workspace id to make canonical for the theme.' },
+    title: { type: 'string', description: 'For assign/suggest: optional human-readable theme title or task title.' },
+    description: { type: 'string', description: 'For assign: theme description; for suggest: task description to classify.' },
+  },
+  required: ['action'],
 }
 
 const LIST_WORKERS_SCHEMA = {
@@ -344,6 +527,20 @@ export class Orchestrator {
         changed = true
       }
     }
+    // Persist the known taxonomy definitions even before they are assigned a
+    // workspace, so descriptions and theme ids survive restarts.
+    for (const definition of THEME_CATALOG) {
+      if (this.store.theme(definition.id)) continue
+      this.store.current.themes[definition.id] = {
+        id: definition.id,
+        title: definition.title,
+        description: definition.description,
+        workspaceId: '',
+        createdAt: this.now(),
+        updatedAt: this.now(),
+      }
+      changed = true
+    }
     if (changed) await this.store.persist()
     for (const conversation of Object.values(this.store.current.conversations)) {
       const agent = this.ctx.agents?.get?.(conversation.id)
@@ -398,6 +595,7 @@ export class Orchestrator {
       version: 1,
       conversations,
       workspaces,
+      themes: this.listThemes(),
       pending: this.pending.list(),
       activeConversationId: latest?.id ?? null,
       diagnostics: {
@@ -598,14 +796,307 @@ export class Orchestrator {
     return { id: workspace.id, path: workspace.path, title: workspace.title }
   }
 
+  /** A theme registry record enriched with its canonical workspace. */
+  themeView(record) {
+    if (!record) return undefined
+    const workspace = record.workspaceId
+      ? (this.ctx.workspaceRegistry.get(record.workspaceId) || this.store.workspace(record.workspaceId))
+      : undefined
+    return {
+      ...record,
+      workspace: workspace ? { id: workspace.id, title: workspace.title || basename(workspace.path), path: workspace.path } : null,
+    }
+  }
+
+  /** All persisted theme registry records, newest first. */
+  listThemes() {
+    return this.store.themes().map((record) => this.themeView(record))
+  }
+
+  /**
+   * Persist `theme -> workspaceId`. Assigning a theme is metadata only: no
+   * directory is moved or removed, and every existing worker keeps its
+   * conversation and workspace record.
+   */
+  async assignTheme({ theme, workspaceId, title, description } = {}) {
+    const id = normalizeThemeId(requireString(theme, 'theme'))
+    const targetId = requireString(workspaceId, 'workspace_id')
+    const workspace = this.ctx.workspaceRegistry.get(targetId) || this.store.workspace(targetId)
+    if (!workspace) throw new Error(`Workspace not found: ${targetId}`)
+    await this.rememberWorkspace(workspace)
+    const existing = this.store.theme(id)
+    const definition = themeDefinition(id)
+    const now = this.now()
+    const record = {
+      id,
+      title: typeof title === 'string' && title.trim().length > 0
+        ? title.trim()
+        : existing?.title || definition?.title || id,
+      description: typeof description === 'string'
+        ? description.trim()
+        : existing?.description || definition?.description || '',
+      workspaceId: workspace.id,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    }
+    await this.store.update((state) => { state.themes[id] = record })
+    return this.themeView(record)
+  }
+
+  /** Directory emptiness without failing the inventory on a missing path. */
+  async directoryInfo(path) {
+    try {
+      const entries = await readdir(path)
+      return { entries: entries.length, empty: entries.length === 0, missing: false }
+    } catch (error) {
+      return { entries: 0, empty: true, missing: error?.code === 'ENOENT' }
+    }
+  }
+
+  /**
+   * Every workspace this plugin created or references, with worker activity,
+   * directory emptiness, registry assignment, and a proposed theme. The group
+   * view is a proposal only; no workspace is modified.
+   */
+  async workspaceInventory() {
+    const records = new Map()
+    for (const workspace of this.store.workspaces()) records.set(workspace.id, workspace)
+    for (const conversation of this.store.conversations()) {
+      if (!conversation.workspaceId || records.has(conversation.workspaceId)) continue
+      const workspace = this.ctx.workspaceRegistry.get(conversation.workspaceId)
+      if (workspace) {
+        records.set(workspace.id, {
+          id: workspace.id,
+          path: workspace.path,
+          title: workspace.title || basename(workspace.path),
+          createdAt: workspace.createdAt ? Date.parse(workspace.createdAt) : this.now(),
+        })
+      }
+    }
+    const workers = this.store.conversations().filter((conversation) => conversation.kind === 'worker')
+    const registryThemes = this.store.themes()
+    const mainWorkspacePath = join(this.stateDir, 'workspaces', 'main')
+    const workspaces = []
+    for (const record of records.values()) {
+      const workspaceWorkers = workers.filter((worker) => worker.workspaceId === record.id)
+      const byStatus = {}
+      for (const worker of workspaceWorkers) byStatus[worker.status] = (byStatus[worker.status] || 0) + 1
+      const activeWorkers = workspaceWorkers.filter((worker) => worker.running === true || worker.status === 'running' || worker.status === 'dispatching').length
+      const idleWorkers = workspaceWorkers.filter((worker) => worker.status === 'waiting' || worker.status === 'needs_input').length
+      const stoppedWorkers = workspaceWorkers.filter((worker) => worker.status === 'stopped' || worker.status === 'failed' || worker.status === 'paused').length
+      const lastActivity = Math.max(
+        record.createdAt || 0,
+        ...workspaceWorkers.map((worker) => Number(worker.updatedAt) || Number(worker.createdAt) || 0),
+      )
+      const directory = await this.directoryInfo(record.path)
+      const assigned = registryThemes.find((theme) => theme.workspaceId === record.id)
+      const proposed = assigned?.id || proposedThemeForWorkspace(record, workspaceWorkers, mainWorkspacePath)
+      workspaces.push({
+        id: record.id,
+        title: record.title,
+        path: record.path,
+        workerCount: workspaceWorkers.length,
+        activeWorkers,
+        idleWorkers,
+        stoppedWorkers,
+        statusCounts: byStatus,
+        lastActivity,
+        lastActivityAt: new Date(lastActivity).toISOString(),
+        directoryEntries: directory.entries,
+        emptyDirectory: directory.empty,
+        missing: directory.missing,
+        empty: workspaceWorkers.length === 0 && directory.empty && !directory.missing,
+        protected: record.path === mainWorkspacePath,
+        theme: assigned?.id || null,
+        proposedTheme: proposed,
+      })
+    }
+    workspaces.sort((left, right) => right.lastActivity - left.lastActivity)
+    const groupsById = new Map()
+    for (const workspace of workspaces) {
+      const themeId = workspace.theme || workspace.proposedTheme
+      const definition = themeDefinition(themeId)
+      if (!groupsById.has(themeId)) {
+        groupsById.set(themeId, {
+          theme: {
+            id: themeId,
+            title: definition?.title || themeId,
+            description: definition?.description || '',
+          },
+          workspaceIds: [],
+        })
+      }
+      groupsById.get(themeId).workspaceIds.push(workspace.id)
+    }
+    const groups = [...groupsById.values()].map((group) => {
+      const items = group.workspaceIds.map((id) => workspaces.find((workspace) => workspace.id === id))
+      const assigned = registryThemes.find((theme) => theme.id === group.theme.id && theme.workspaceId)
+      const canonicalId = assigned && group.workspaceIds.includes(assigned.workspaceId)
+        ? assigned.workspaceId
+        : chooseCanonicalWorkspace(items, group.theme.id)
+      return {
+        theme: group.theme,
+        workspaceIds: group.workspaceIds,
+        canonicalId: canonicalId || null,
+        duplicateIds: canonicalId ? group.workspaceIds.filter((id) => id !== canonicalId) : group.workspaceIds.slice(1),
+        emptyIds: items.filter((workspace) => workspace.empty).map((workspace) => workspace.id),
+        emptyDirectoryIds: items.filter((workspace) => workspace.emptyDirectory).map((workspace) => workspace.id),
+        workerCount: items.reduce((sum, workspace) => sum + workspace.workerCount, 0),
+        activeWorkers: items.reduce((sum, workspace) => sum + workspace.activeWorkers, 0),
+        idleWorkers: items.reduce((sum, workspace) => sum + workspace.idleWorkers, 0),
+      }
+    })
+    return { workspaces, groups, themes: this.listThemes() }
+  }
+
+  /** Find an existing workspace by id, exact title, or expanded path; never create. */
+  async findExistingWorkspace(value) {
+    const text = String(value ?? '').trim()
+    if (text.length === 0) return undefined
+    const direct = this.ctx.workspaceRegistry.get(text) || this.store.workspace(text)
+    if (direct) return this.rememberWorkspace(direct)
+    const candidates = [...this.ctx.workspaceRegistry.list(), ...this.store.workspaces()]
+    const byTitle = candidates.find((workspace) => workspace.title === text)
+    if (byTitle) return this.rememberWorkspace(byTitle)
+    const path = expandPath(text, this.stateDir)
+    const byPath = candidates.find((workspace) => workspace.path === path)
+    return byPath ? this.rememberWorkspace(byPath) : undefined
+  }
+
+  /** Refuse silent workspace creation for a theme. */
+  requireThemeJustification(themeId, justification) {
+    if (typeof justification === 'string' && justification.trim().length > 0) return justification.trim()
+    throw new Error(`Theme "${themeId}" has no registered workspace. Reuse an existing workspace, or pass new_workspace/justification; workspace creation is never silent.`)
+  }
+
+  /** Resolve the workspace for one dispatch, honoring theme reuse first. */
+  async resolveDispatchWorkspace({ themeId, themeRecord, workspace, newWorkspace, justification, taskTitle }) {
+    const themeWorkspace = themeRecord?.workspaceId
+      ? (this.ctx.workspaceRegistry.get(themeRecord.workspaceId) || this.store.workspace(themeRecord.workspaceId))
+      : undefined
+    if (themeId && themeWorkspace && !newWorkspace) return this.rememberWorkspace(themeWorkspace)
+    if (newWorkspace) {
+      if (themeId && !(themeRecord?.workspaceId && themeWorkspace)) this.requireThemeJustification(themeId, justification)
+      return this.ensureWorkspace({ path: newWorkspace.path, title: newWorkspace.title || taskTitle })
+    }
+    if (!themeId) return this.resolveWorkspace(workspace, taskTitle)
+    if (typeof workspace === 'string' && workspace.trim().length > 0) {
+      const existing = await this.findExistingWorkspace(workspace)
+      if (existing) return existing
+      const text = workspace.trim()
+      if (text === '.' || text === '..' || text.startsWith('~') || text.includes('/') || text.includes('\\')) {
+        this.requireThemeJustification(themeId, justification)
+        return this.ensureWorkspace({ path: text, title: taskTitle })
+      }
+      this.requireThemeJustification(themeId, justification)
+      return this.ensureWorkspace({ title: text })
+    }
+    this.requireThemeJustification(themeId, justification)
+    return this.ensureWorkspace({ title: themeRecord?.title || themeId })
+  }
+
+  /** Register a newly resolved workspace for a theme that had none. */
+  async registerDispatchTheme(themeId, target) {
+    if (!themeId) return
+    const record = this.store.theme(themeId)
+    const mapped = record?.workspaceId
+      ? (this.ctx.workspaceRegistry.get(record.workspaceId) || this.store.workspace(record.workspaceId))
+      : undefined
+    if (mapped) return
+    await this.assignTheme({ theme: themeId, workspaceId: target.id, title: record?.title, description: record?.description })
+  }
+
+  /** Match a free-form description to a registered theme or a proposal. */
+  async suggestTheme({ description, title } = {}) {
+    const text = [title, description].filter((value) => typeof value === 'string' && value.trim().length > 0).join('\n')
+    const registered = this.listThemes()
+      .map((theme) => ({ theme, score: themeMatchScore(theme, text) }))
+      .sort((left, right) => right.score - left.score || left.theme.id.localeCompare(right.theme.id))
+    if (text.length > 0 && registered.length > 0 && registered[0].score > 0) {
+      const top = registered[0]
+      if (top.theme.workspace) {
+        return {
+          ok: true,
+          theme: top.theme,
+          workspace: top.theme.workspace,
+          score: top.score,
+          registered: true,
+          candidates: registered.slice(0, 5).map((entry) => ({ id: entry.theme.id, title: entry.theme.title, score: entry.score })),
+        }
+      }
+      // The theme is known but has no canonical workspace yet. Return the
+      // inventory's proposed canonical as a hint rather than no suggestion.
+      const inventory = await this.workspaceInventory()
+      const group = inventory.groups.find((entry) => entry.theme.id === top.theme.id)
+      const candidate = group?.canonicalId
+        ? inventory.workspaces.find((entry) => entry.id === group.canonicalId)
+        : undefined
+      if (candidate) {
+        return {
+          ok: true,
+          theme: { ...top.theme, workspaceId: candidate.id },
+          workspace: { id: candidate.id, title: candidate.title, path: candidate.path },
+          score: top.score,
+          registered: false,
+          candidates: registered.slice(0, 5).map((entry) => ({ id: entry.theme.id, title: entry.theme.title, score: entry.score })),
+        }
+      }
+    }
+    const proposal = suggestedThemeForText(text)
+    const inventory = await this.workspaceInventory()
+    const group = inventory.groups.find((entry) => entry.theme.id === proposal.id)
+    const workspace = group?.canonicalId
+      ? inventory.workspaces.find((entry) => entry.id === group.canonicalId)
+      : undefined
+    return {
+      ok: true,
+      theme: { id: proposal.id, title: proposal.title, description: proposal.description, workspaceId: workspace?.id || '' },
+      workspace: workspace ? { id: workspace.id, title: workspace.title, path: workspace.path } : null,
+      score: proposal.id === DEFAULT_THEME ? 0 : 1,
+      registered: false,
+      candidates: registered.slice(0, 5).map((entry) => ({ id: entry.theme.id, title: entry.theme.title, score: entry.score })),
+    }
+  }
+
+  /** The `superagent_workspaces` tool implementation. */
+  async workspacesTool({ action = 'list', theme, workspaceId, title, description } = {}) {
+    switch (action) {
+      case 'list': {
+        const inventory = await this.workspaceInventory()
+        return { ok: true, workspaces: inventory.workspaces, groups: inventory.groups, themes: inventory.themes }
+      }
+      case 'themes':
+        return { ok: true, themes: this.listThemes() }
+      case 'assign': {
+        const assigned = await this.assignTheme({ theme, workspaceId, title, description })
+        return { ok: true, theme: assigned }
+      }
+      case 'suggest':
+        return this.suggestTheme({ description, title })
+      default:
+        throw new Error('action must be list, themes, assign, or suggest')
+    }
+  }
+
   /** Start a worker conversation and hand it the task assignment. */
-  async dispatchTask({ parentId, title, prompt, workspace, newWorkspace }) {
+  async dispatchTask({ parentId, title, prompt, workspace, newWorkspace, theme, justification }) {
     const parent = this.requireSuper(parentId)
     const taskTitle = requireString(title, 'title')
     const assignment = requireString(prompt, 'prompt')
-    const target = newWorkspace
-      ? await this.ensureWorkspace({ path: newWorkspace.path, title: newWorkspace.title || taskTitle })
-      : await this.resolveWorkspace(workspace, taskTitle)
+    const themeId = typeof theme === 'string' && theme.trim().length > 0 ? normalizeThemeId(theme) : ''
+    const themeRecord = themeId ? this.store.theme(themeId) : undefined
+    const knownWorkspaceIds = new Set(this.ctx.workspaceRegistry.list().map((workspace) => workspace.id))
+    const target = await this.resolveDispatchWorkspace({
+      themeId,
+      themeRecord,
+      workspace,
+      newWorkspace,
+      justification,
+      taskTitle,
+    })
+    const workspaceCreated = !knownWorkspaceIds.has(target.id)
+    const workspaceReused = !workspaceCreated
+    await this.registerDispatchTheme(themeId, target)
     const id = `superagent-worker-${randomUUID()}`
     const now = this.now()
     const record = {
@@ -639,10 +1130,16 @@ export class Orchestrator {
         }
         if (owner) {
           owner.updatedAt = this.now()
-          owner.lastMessage = `Dispatched worker: ${taskTitle}`
+          owner.lastMessage = `Dispatched worker: ${taskTitle}${themeId ? ` (${themeId})` : ''}`
         }
       })
-      return this.view(this.store.conversation(id))
+      return {
+        ...this.view(this.store.conversation(id)),
+        theme: themeId || null,
+        workspace_created: workspaceCreated,
+        workspace_reused: workspaceReused,
+        workspace_theme: themeId ? (this.store.theme(themeId)?.workspaceId || target.id) : null,
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.runtimeErrors.push({ scope: 'dispatch', workerId: id, message, stack: error instanceof Error ? error.stack : undefined, at: this.now() })
@@ -1099,6 +1596,8 @@ export class Orchestrator {
           prompt: args.prompt,
           workspace: args.workspace,
           newWorkspace: args.new_workspace,
+          theme: args.theme,
+          justification: args.justification,
         })),
       tool('superagent_list_workers',
         'List worker conversations with their live status, workspace, and latest result.',
@@ -1125,9 +1624,19 @@ export class Orchestrator {
         STOP_WORKER_SCHEMA,
         async (args) => orchestrator.stopWorker({ workerId: requireString(args.worker_id, 'worker_id'), reason: args.reason })),
       tool('superagent_create_workspace',
-        'Create a workspace without starting work. Use it when the user wants a directory prepared for several future tasks.',
+        'Create a workspace without starting work. Use it when the user wants a directory prepared for several future tasks. Prefer theme reuse; register the new workspace with superagent_workspaces assign.',
         CREATE_WORKSPACE_SCHEMA,
         async (args) => orchestrator.createWorkspace({ path: args.path, title: args.title })),
+      tool('superagent_workspaces',
+        'Workspace discovery and theme registry. action "list" returns every SA workspace with worker counts, activity, emptiness and proposed theme groups; "themes" lists persisted theme-to-workspace assignments; "assign" maps a theme to an existing workspace; "suggest" classifies a task description into the best theme and workspace. Use before dispatch when the theme is unclear.',
+        WORKSPACES_SCHEMA,
+        async (args) => orchestrator.workspacesTool({
+          action: requireString(args.action, 'action'),
+          theme: args.theme,
+          workspaceId: args.workspace_id,
+          title: args.title,
+          description: args.description,
+        })),
       tool('superagent_create_conversation',
         'Open another Super Agent conversation, optionally in a different workspace, for a separate long-running thread. The new conversation appears in the conversation history.',
         CREATE_CONVERSATION_SCHEMA,

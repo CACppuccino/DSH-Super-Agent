@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, test } from 'node:test'
-import { Orchestrator, SUPER_DENY, SUPER_PROMPT, WORKER_PROMPT } from '../lib/orchestrator.js'
+import { Orchestrator, SUPER_DENY, SUPER_PROMPT, THEME_CATALOG, WORKER_PROMPT } from '../lib/orchestrator.js'
 import { StateStore } from '../lib/state.js'
 import { FakeHost } from './fakes.js'
 
@@ -57,6 +57,7 @@ test('bootstrap creates a Super Agent conversation, workspace, prompt, and tools
     'superagent_stop_worker',
     'superagent_worker_output',
     'superagent_worker_tags',
+    'superagent_workspaces',
   ])
   const dispatch = superAgent.tools.get('superagent_dispatch_task')
   assert.equal(dispatch.output.schema.type, 'object')
@@ -533,4 +534,189 @@ test('worker tags are many-to-many, normalized, persisted, and exposed by the to
 test('the Super Agent prompt tells the model how to use worker tags', () => {
   assert.match(SUPER_PROMPT, /superagent_worker_tags/)
   assert.match(SUPER_PROMPT, /short tags/i)
+})
+
+test('dispatch classifies by theme, reuses the theme workspace, and never creates silently', async () => {
+  const { orchestrator, host, superAgent, stateDir } = await bootstrapped()
+  const workspacesTool = superAgent.tools.get('superagent_workspaces')
+  assert.ok(workspacesTool, 'the workspace discovery tool is registered')
+  assert.deepEqual(workspacesTool.parameters.properties.action.enum, ['list', 'themes', 'assign', 'suggest'])
+  const dispatch = superAgent.tools.get('superagent_dispatch_task')
+
+  const quant = await orchestrator.createWorkspace({ title: 'Quant Research Hub' })
+  const assigned = await workspacesTool.execute({
+    action: 'assign',
+    theme: 'quant-research',
+    workspace_id: quant.id,
+    description: 'Quant strategies, backtests, and research.',
+  }, { agent: superAgent })
+  assert.equal(assigned.ok, true)
+  assert.equal(assigned.theme.id, 'quant-research')
+  assert.equal(assigned.theme.workspaceId, quant.id)
+  assert.equal(assigned.theme.workspace.path, quant.path)
+
+  const first = await dispatch.execute({
+    title: 'Backtest momentum strategy',
+    prompt: 'Run the backtest and report the result.',
+    theme: 'quant-research',
+  }, { agent: superAgent, signal: new AbortController().signal })
+  assert.equal(first.theme, 'quant-research')
+  assert.equal(first.workspace_created, false)
+  assert.equal(first.workspace_reused, true)
+  assert.equal(first.workspaceId, quant.id)
+  assert.equal(first.workspacePath, quant.path)
+  assert.equal(orchestrator.store.theme('quant-research').workspaceId, quant.id)
+
+  // Theme labels normalize to the same registry id; a new conversation in the
+  // same theme reuses the canonical workspace.
+  const second = await dispatch.execute({
+    title: 'Analyze factor stability',
+    prompt: 'Analyze the factors.',
+    theme: 'Quant Research',
+  }, { agent: superAgent, signal: new AbortController().signal })
+  assert.equal(second.workspace_created, false)
+  assert.equal(second.workspaceId, quant.id)
+  assert.notEqual(second.id, first.id)
+  assert.equal(orchestrator.store.conversation(first.id).workspaceId, quant.id)
+  assert.equal(orchestrator.store.conversation(second.id).workspaceId, quant.id)
+
+  // A registered theme wins over a different explicit `workspace` unless
+  // new_workspace is requested.
+  const other = await orchestrator.createWorkspace({ title: 'Unrelated scratch' })
+  const ignored = await dispatch.execute({
+    title: 'A third quant task',
+    prompt: 'Keep it in the theme workspace.',
+    theme: 'quant-research',
+    workspace: other.id,
+  }, { agent: superAgent, signal: new AbortController().signal })
+  assert.equal(ignored.workspaceId, quant.id)
+  assert.equal(ignored.workspace_created, false)
+  assert.equal(orchestrator.store.theme('quant-research').workspaceId, quant.id)
+
+  // An explicit new workspace is still honored, but it does not silently
+  // replace the theme's canonical workspace.
+  const explicit = await dispatch.execute({
+    title: 'Separate quant deliverable',
+    prompt: 'Build the separate deliverable.',
+    theme: 'quant-research',
+    new_workspace: { title: 'Quant separate deliverable' },
+  }, { agent: superAgent, signal: new AbortController().signal })
+  assert.equal(explicit.workspace_created, true)
+  assert.equal(explicit.workspace_reused, false)
+  assert.notEqual(explicit.workspaceId, quant.id)
+  assert.equal(orchestrator.store.theme('quant-research').workspaceId, quant.id)
+
+  // An unknown theme requires a justification to create a workspace.
+  await assert.rejects(
+    () => dispatch.execute({ title: 'Legal review', prompt: 'Review it.', theme: 'legal-review' }, { agent: superAgent }),
+    /justification/,
+  )
+  await assert.rejects(
+    () => dispatch.execute({ title: 'Legal review', prompt: 'Review it.', theme: 'legal-review', new_workspace: { title: 'Legal' } }, { agent: superAgent }),
+    /justification/,
+  )
+  const legal = await dispatch.execute({
+    title: 'Legal review',
+    prompt: 'Review the contract.',
+    theme: 'legal-review',
+    justification: 'Contracts need an isolated directory; do not mix them with product work.',
+  }, { agent: superAgent, signal: new AbortController().signal })
+  assert.equal(legal.workspace_created, true)
+  assert.equal(legal.theme, 'legal-review')
+  assert.equal(orchestrator.store.theme('legal-review').workspaceId, legal.workspaceId)
+  assert.ok(legal.workspacePath.startsWith(join(stateDir, 'workspaces')))
+
+  // A theme with no workspace can adopt an explicitly supplied existing
+  // workspace without creating another directory.
+  const infra = await orchestrator.createWorkspace({ title: 'Infra Hub' })
+  const adopted = await dispatch.execute({
+    title: 'Check disk health',
+    prompt: 'Check the disks.',
+    theme: 'infra-ops',
+    workspace: infra.id,
+  }, { agent: superAgent, signal: new AbortController().signal })
+  assert.equal(adopted.workspace_created, false)
+  assert.equal(adopted.workspaceId, infra.id)
+  assert.equal(orchestrator.store.theme('infra-ops').workspaceId, infra.id)
+
+  // The registry and assignments survive a process-style reload.
+  const reloaded = new Orchestrator({ ctx: host, store: new StateStore(join(stateDir, 'state.json')), stateDir })
+  await reloaded.load()
+  assert.equal(reloaded.store.theme('quant-research').workspaceId, quant.id)
+  assert.equal(reloaded.store.theme('legal-review').workspaceId, legal.workspaceId)
+  assert.equal(reloaded.listThemes().length, THEME_CATALOG.length + 1, 'known themes plus the custom legal-review theme')
+  assert.deepEqual(reloaded.listThemes().filter((theme) => theme.workspaceId).map((theme) => theme.id).sort(), ['infra-ops', 'legal-review', 'quant-research'])
+})
+
+test('the workspace tool inventories emptiness and groups, and suggest classifies descriptions', async () => {
+  const { orchestrator, superAgent } = await bootstrapped()
+  const workspacesTool = superAgent.tools.get('superagent_workspaces')
+  const memory = await orchestrator.createWorkspace({ title: 'Memory Hub' })
+  const scratch = await orchestrator.createWorkspace({ title: 'Scratch empty' })
+  await workspacesTool.execute({
+    action: 'assign',
+    theme: 'memory',
+    workspace_id: memory.id,
+    title: 'Memory systems',
+    description: 'Cloudflare memory sync, project memories, summaries, and notes.',
+  }, { agent: superAgent })
+  const worker = await superAgent.tools.get('superagent_dispatch_task').execute({
+    title: 'Sync memory to Cloudflare',
+    prompt: 'Sync the memory store.',
+    theme: 'memory',
+  }, { agent: superAgent, signal: new AbortController().signal })
+
+  const list = await workspacesTool.execute({ action: 'list' }, { agent: superAgent })
+  assert.equal(list.ok, true)
+  const memoryRow = list.workspaces.find((workspace) => workspace.id === memory.id)
+  assert.equal(memoryRow.workerCount, 1)
+  assert.equal(memoryRow.activeWorkers, 1)
+  assert.equal(memoryRow.theme, 'memory')
+  assert.equal(memoryRow.proposedTheme, 'memory')
+  const scratchRow = list.workspaces.find((workspace) => workspace.id === scratch.id)
+  assert.equal(scratchRow.workerCount, 0)
+  assert.equal(scratchRow.emptyDirectory, true)
+  assert.equal(scratchRow.empty, true)
+  const memoryGroup = list.groups.find((group) => group.theme.id === 'memory')
+  assert.equal(memoryGroup.canonicalId, memory.id)
+  assert.equal(memoryGroup.workspaceIds.includes(memory.id), true)
+  assert.equal(list.themes.some((theme) => theme.id === 'memory'), true)
+
+  const themes = await workspacesTool.execute({ action: 'themes' }, { agent: superAgent })
+  assert.equal(themes.themes.length, THEME_CATALOG.length)
+  const memoryTheme = themes.themes.find((theme) => theme.id === 'memory')
+  assert.equal(memoryTheme.workspace.id, memory.id)
+
+  const suggestion = await workspacesTool.execute({
+    action: 'suggest',
+    description: 'Deploy the Cloudflare memory sync backend and update project summaries',
+  }, { agent: superAgent })
+  assert.equal(suggestion.registered, true)
+  assert.equal(suggestion.theme.id, 'memory')
+  assert.equal(suggestion.workspace.id, memory.id)
+
+  const fallback = await workspacesTool.execute({
+    action: 'suggest',
+    description: 'Package a new DSH plugin panel for the desktop sidebar',
+  }, { agent: superAgent })
+  assert.equal(fallback.theme.id, 'dsh-plugin')
+  assert.equal(fallback.registered, false)
+
+  await assert.rejects(
+    () => workspacesTool.execute({ action: 'assign', theme: 'x', workspace_id: 'missing' }, { agent: superAgent }),
+    /Workspace not found/,
+  )
+  await assert.rejects(
+    () => workspacesTool.execute({ action: 'explode' }, { agent: superAgent }),
+    /action must be list, themes, assign, or suggest/,
+  )
+  assert.equal(worker.theme, 'memory')
+  assert.equal(worker.workspace_created, false)
+})
+
+test('the Super Agent prompt teaches workspace discipline', () => {
+  assert.match(SUPER_PROMPT, /Workspace discipline/)
+  assert.match(SUPER_PROMPT, /superagent_workspaces/)
+  assert.match(SUPER_PROMPT, /workspace_created/)
+  assert.match(SUPER_PROMPT, /never create a workspace silently/i)
 })

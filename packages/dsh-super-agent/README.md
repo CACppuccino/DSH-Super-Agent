@@ -44,6 +44,19 @@ State is kept under `$DSH_HOME/state/dsh-super-agent/` (override with `DSH_SUPER
 5. When the Super Agent needs a decision, it registers a pending item. The **待决策项 / Pending decisions** section below the conversation list shows it; click the item, choose an option or type an answer, then submit. The item leaves the rail, the card shows the answered state briefly and then collapses automatically, and the Super Agent receives the answer as a user message. Both rail sections have independent collapse buttons whose state survives a reload.
 6. **New conversation** can place a new Super Agent conversation in any workspace the Harness knows, or create a new workspace path. The workspace picker includes all registered workspaces, not only the ones this plugin created.
 
+## Workspace discipline and themes
+
+Every dispatch is classified into a **theme** (for example `quant-research`, `dsh-plugin`, `infra-ops`, `memory`, `windows-node`, `backup`, or a more specific id). Themes are not just labels: the plugin persists a `theme -> workspaceId` registry in `state.json` (and seeds the known theme ids, titles, and descriptions on first load) so a new worker conversation for a known theme **reuses** the theme's canonical workspace instead of creating another directory.
+
+`superagent_dispatch_task` takes `theme` and an optional `justification`. The behaviour is deliberately explicit:
+
+- a known theme with a registered workspace is reused; the result says `workspace_created: false`, `workspace_reused: true`, and echoes the normalized `theme`;
+- `new_workspace` is still honored for a genuinely separate deliverable, and the result says `workspace_created: true`;
+- an unknown theme, or a theme without a workspace, refuses to create a directory unless `new_workspace` or `justification` is supplied; the new workspace is then registered under the theme;
+- every dispatch result surfaces `theme`, `workspace_created`, and `workspace_reused`, so the Super Agent can tell the user, and no workspace is created silently.
+
+`superagent_workspaces` is the discovery surface: `list` inventories every SA workspace (worker counts, live/idle/stopped breakdown, last activity, directory emptiness, proposed theme groups), `themes` lists the persisted registry, `assign` maps a theme to an existing workspace, and `suggest` classifies a task description into the best theme + workspace. Proposed groups are **hints only**; retiring or merging workspaces is a separate, dry-run consolidation step for the user to approve, and existing worker conversations are never moved.
+
 ## Model tools
 
 Super Agent sessions receive:
@@ -55,6 +68,7 @@ Super Agent sessions receive:
 | `superagent_list_workers` | List workers with live status. |
 | `superagent_worker_output` | Read a worker's latest output and recent progress. |
 | `superagent_worker_tags` | Set/add/remove short tags on a worker, or list the many-to-many tag index. |
+| `superagent_workspaces` | Inventory workspaces and proposed theme groups, list/assign the persisted theme registry, or suggest a theme for a task. |
 | `superagent_stop_worker` | Stop a worker's current turn. |
 | `superagent_create_workspace` | Prepare a workspace. |
 | `superagent_create_conversation` | Open another Super Agent conversation. |
@@ -70,7 +84,7 @@ Super Agent sessions are additionally **denied the built-in host-side tools**: s
 ```
 index.js                  Host entry: services, Session hooks, HTTP routes
 lib/orchestrator.js       Conversations, workspaces, dispatch, progress relay
-lib/state.js              Atomic JSON catalog (including per-worker tags) and bounded progress log
+lib/state.js              Atomic JSON catalog (workspaces, per-worker tags, theme registry) and bounded progress log
 lib/pending.js            Atomic pending-decision queue
 lib/api.js                Same-origin panel API
 lib/billing.js            Account balance, Platform per-key spend, local 24-hour tokens
@@ -81,7 +95,7 @@ test/                     Node test suite for host and client logic
 
 The Host half uses the live Harness services `agents`, `sessionController`, `workspaceRegistry`, `systemPrompt`, `tools`, and `webServer`. It decorates an Agent when its Session belongs to the catalog:
 
-- Super Agent: a fixed orchestrator prompt and ten tools, registered on the Agent's scoped `tools` and `systemPrompt`; the built-in one-shot `subagent`, `workflow`, and teammate tools are denied so delegation stays on the tracked worker path.
+- Super Agent: a fixed orchestrator prompt and eleven tools, registered on the Agent's scoped `tools` and `systemPrompt`; the built-in one-shot `subagent`, `workflow`, and teammate tools are denied so delegation stays on the tracked worker path.
 - Worker: a worker prompt and `superagent_report_progress`.
 
 Worker progress is observed two ways:
@@ -99,7 +113,7 @@ The Client half uses the public Client services `sessions`, `uiWorkspace`, `slot
 node --test test/*.test.js
 ```
 
-The suite covers the state store (including tag normalization and persistence), the pending-decision store, dispatch/workspace/progress orchestration, HTTP authorization and routes (including pending create/list/resolve, worker tag set/list, and answer delivery), the Client's pure transcript/grouping/registration logic, worker count derivation, tag filter any-of semantics and persistence, deterministic tag colours, turn-ownership mapping and turn-rail marker decoration, rail section ordering and collapse persistence, the inline pending card, tag chips/editor, the turn legend, and the header widget's balance/usage folding, fallback, and formatting. It uses in-process fakes and temporary directories; no model or live Session is needed.
+The suite covers the state store (including tag normalization and persistence, theme registry persistence), the pending-decision store, dispatch/workspace/progress orchestration (including theme reuse, explicit new workspaces, justification enforcement, registry persistence, inventory grouping, and description-to-theme suggestion), HTTP authorization and routes (including pending create/list/resolve, worker tag set/list, workspace/theme inventory+assignment, and answer delivery), the Client's pure transcript/grouping/registration logic, worker count derivation, tag filter any-of semantics and persistence, deterministic tag colours, turn-ownership mapping and turn-rail marker decoration, rail section ordering and collapse persistence, the inline pending card, tag chips/editor, the turn legend, and the header widget's balance/usage folding, fallback, and formatting. It uses in-process fakes and temporary directories; no model or live Session is needed.
 
 ## 余额与 24 小时用量（标题栏状态组件）
 

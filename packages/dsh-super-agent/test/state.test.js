@@ -145,3 +145,32 @@ test('worker tags are trimmed, deduped case-insensitively, bounded, and persiste
   const legacy = normalizeState({ version: 1, conversations: { old: conversation('old', { kind: 'worker' }) } })
   assert.deepEqual(legacy.conversations.old.tags, [])
 })
+
+test('theme registry records are normalized and survive a reload', async () => {
+  const { file, store } = await temporaryStore()
+  await store.update((state) => {
+    state.themes['memory'] = {
+      id: 'memory',
+      title: 'Memory systems',
+      description: 'Cloudflare sync and notes',
+      workspaceId: 'ws-memory',
+      createdAt: 10,
+      updatedAt: 20,
+    }
+    state.themes.bad = { id: 42 }
+  })
+  assert.equal(store.snapshot().themes.memory.workspaceId, 'ws-memory')
+  assert.equal(store.snapshot().themes.bad, undefined)
+  const reloaded = new StateStore(file)
+  await reloaded.load()
+  assert.deepEqual(reloaded.theme('memory'), {
+    id: 'memory',
+    title: 'Memory systems',
+    description: 'Cloudflare sync and notes',
+    workspaceId: 'ws-memory',
+    createdAt: 10,
+    updatedAt: 20,
+  })
+  assert.deepEqual(reloaded.themes().map((theme) => theme.id), ['memory'])
+  assert.deepEqual(emptyState().themes, {})
+})
