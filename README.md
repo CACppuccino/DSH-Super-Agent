@@ -23,10 +23,20 @@ iPhone 上的 DSH Remote 就能像连本机一样连过去。
 | `dsh-remote` | Host 插件：鉴权的 `/remote-api`、`/healthz`、`events.mux` / `events.host` | 可以，不想用 Super Agent 的 profile 只装它 |
 | `@local/dsh-suite` | Bundle 层：依赖上面两个包，用一条 patch 同时插入两行 | 这就是一键安装装的东西 |
 
-三个包是同一仓库里的真实目录依赖（`file:../dsh-super-agent`、`file:../dsh-remote`），
+套件里的三个包是同一仓库里的真实目录依赖（`file:../dsh-super-agent`、`file:../dsh-remote`），
 **没有任何 `link:` 或指向构建机绝对路径的写法**：安装时三个包一起被复制到
 `$DSH_HOME/plugins/@local/dsh-suite/<版本>-<内容哈希>/`，再由 pnpm 装进 profile 的
 `node_modules`（真实目录，不是软链）。
+
+### 其他独立插件
+
+| 包 | 作用 | 安装 |
+|---|---|---|
+| `@local/dsh-project-memory` | Host 插件：两层项目记忆（Super Agent summary + worker detail notes），可选 Cloudflare 双机共享 | 独立安装：`cd packages/dsh-project-memory && dsh plugin --profile desktop add "file:$PWD"`；**不在一键套件里** |
+
+项目记忆与 Super Agent 解耦：没有 Super Agent 时降级为只读写本 workspace 项目根的
+notes；装上 Super Agent 后按角色提供 summary/notes 工具。详见
+[包内 README](packages/dsh-project-memory/README.md)。
 
 ```
 iPhone (DSHRemote)                    Mac（一个 DSH 进程）
@@ -299,6 +309,11 @@ DSH-Super-Agent/
 │   │   ├── lib/               # index / compat（0.2.x 协议翻译）
 │   │   ├── scripts/           # gen-token、独立安装脚本
 │   │   └── tests/             # node --test
+│   ├── dsh-project-memory/    # Host 插件：两层项目记忆 + 可选 Cloudflare 共享
+│   │   ├── index.js           # Host 入口：skill、角色权限、工具注册
+│   │   ├── lib/               # store / service / local+cloudflare backends
+│   │   ├── cloudflare/        # Worker + D1（wrangler、migrations、tests）
+│   │   └── test/              # node --test
 │   └── dsh-suite/             # Bundle + 安装器
 │       ├── install.sh         # 实际安装流程（POSIX sh）
 │       ├── uninstall.sh
@@ -320,9 +335,12 @@ DSH-Super-Agent/
 node --test test/*.test.js                     # packages/dsh-super-agent
 npm test                                       # packages/dsh-remote
 npm test                                       # packages/dsh-suite
+npm test                                       # packages/dsh-project-memory
+npm run test:all                               # packages/dsh-project-memory + Worker (node:sqlite)
 ```
 
-三个测试套件都只用进程内 fake 和临时目录，不需要模型、不需要正在运行的 DSH。
+这些测试套件都只用进程内 fake、临时目录和内存 SQLite，不需要模型、不需要正在运行的
+DSH，也不需要 Cloudflare 账号。
 
 改了插件后不用同步任何 vendor 目录：安装时直接从 `packages/` 复制。
 

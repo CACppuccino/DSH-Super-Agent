@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "backend": "cloudflare",
+  "url": "https://dsh-project-memory.<account-subdomain>.workers.dev",
+  "machineId": "macbook-a",
+  "keychainService": "dsh-project-memory",
+  "keychainAccount": "cloudflare-token"
+}

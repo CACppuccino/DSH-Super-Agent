@@ -1,0 +1,12 @@
+name = "dsh-project-memory"
+main = "worker/src/index.ts"
+compatibility_date = "2025-11-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dsh-project-memory"
+database_id = "cc6a9f97-e273-4025-b99d-d156b6eb3b74"
+migrations_dir = "migrations"
+
+[observability]
+enabled = true

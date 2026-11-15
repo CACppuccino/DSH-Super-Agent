@@ -1,0 +1,12 @@
+node_modules/
+cloudflare/node_modules/
+cloudflare/.wrangler/
+cloudflare/.dev.vars
+cloud.json
+.dev.vars
+.DS_Store
+*.log
+*.tgz
+vendor/
+dist/
+build/

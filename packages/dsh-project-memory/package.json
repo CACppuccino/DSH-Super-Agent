@@ -1,0 +1,47 @@
+{
+  "name": "@local/dsh-project-memory",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Two-layer, per-project memory for DeepSeek Harness: Super Agent summaries plus worker-owned tagged detail notes.",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./lib/*": "./lib/*",
+    "./skills/*": "./skills/*"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "skills",
+    "cordis.patch.yml",
+    "README.md",
+    "cloud.json.example",
+    "docs",
+    "scripts",
+    "cloudflare"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "manifestVersion": 1
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:worker": "node --test cloudflare/worker/test/*.test.ts",
+    "test:all": "npm test && npm run test:worker",
+    "cloud:setup": "node scripts/cloud-setup.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.1"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "project-memory",
+    "super-agent",
+    "plugin"
+  ]
+}

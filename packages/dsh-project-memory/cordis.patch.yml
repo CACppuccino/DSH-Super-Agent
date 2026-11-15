@@ -1,0 +1,21 @@
+# dsh-project-memory bundle layer: one Host row owns the project registry,
+# the two storage layers, the role-scoped tools, and the bundled skill.
+#
+# This plugin is intentionally independent of dsh-super-agent: when the Super
+# Agent catalog is absent it falls back to least-privilege worker/notes mode.
+#
+# The backend defaults to `auto`: local files unless a Cloudflare Worker URL is
+# configured (env DSH_PROJECT_MEMORY_CLOUD_URL or <root>/cloud.json). To pin it
+# in a profile patch, override this row in the profile's cordis.patch.yml:
+#
+#   - id: dsh-project-memory
+#     config:
+#       backend: cloudflare          # auto | local | cloudflare
+#       cloudflare:
+#         url: https://<worker>.workers.dev
+#         machineId: macbook-a
+#         # the bearer token is read from the macOS Keychain, never config
+#
+- insert:
+    - id: dsh-project-memory
+      name: '@local/dsh-project-memory'
