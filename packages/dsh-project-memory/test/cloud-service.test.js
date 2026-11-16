@@ -8,7 +8,7 @@ import worker from '../cloudflare/worker/src/index.ts'
 import { createTestD1 } from '../cloudflare/worker/test/d1-shim.ts'
 import { CloudflareBackend } from '../lib/backends/cloudflare.js'
 import { apply } from '../index.js'
-import { FakeAgent, callTool, catalogFor, makeService, tempDir, writeCatalog } from './helpers.js'
+import { FakeAgent, callTool, catalogFor, makeService, sleepOrAbort, tempDir, writeCatalog } from './helpers.js'
 
 const TOKEN = 'service-test-token-value'
 const URL_BASE = 'https://memory.test'
@@ -20,13 +20,16 @@ async function makeRepo(remote = 'git@github.com:example/service.git') {
   return dir
 }
 
-async function cloudSetup() {
+async function cloudSetup(overrides = {}) {
   const d1 = createTestD1()
   const env = { DB: d1.db, MEMORY_TOKEN: TOKEN }
   const rawFetch = (url, init) => worker.fetch(new Request(url, init), env)
-  const state = { network: true }
+  const state = { network: true, slowNotesMs: 0 }
   const fetchImpl = async (url, init) => {
     if (!state.network) throw Object.assign(new Error('offline'), { code: 'ECONNREFUSED' })
+    if (state.slowNotesMs > 0 && String(url).includes('/notes')) {
+      await sleepOrAbort(state.slowNotesMs, init?.signal)
+    }
     return rawFetch(url, init)
   }
   const rootDir = await realpath(await mkdtemp(join(tmpdir(), 'pm-cloud-svc-root-')))
@@ -43,6 +46,7 @@ async function cloudSetup() {
       syncBudgetMs: 800,
       writeBudgetMs: 800,
       autoSync: false,
+      ...overrides,
     },
     fetchImpl,
     autoSync: false,
@@ -113,6 +117,59 @@ test('service results expose sync metadata and keep working while offline', asyn
     new Set(['shared note', 'offline note']),
   )
   assert.equal(record.key, Object.values(fresh.projects)[0].key)
+})
+
+test('a slow-but-healthy Worker never makes tool results report offline', async (t) => {
+  const cloud = await cloudSetup({ writeBudgetMs: 400, syncBudgetMs: 400 })
+  t.after(() => cloud.close())
+  t.after(() => cloud.backend.close())
+  const repo = await makeRepo('git@github.com:example/slow-worker.git')
+  const catalog = catalogFor({ workerPath: repo })
+  const service = makeService({ store: cloud.backend, catalog })
+  const agent = new FakeAgent('worker-1', { cwd: repo, catalog })
+  service.registerAgent(agent)
+  agent.loadSkill()
+
+  const first = await callTool(agent, 'project_memory_note_append', {
+    title: 'first note',
+    body: '## body\n\nfast enough',
+    tags: ['工程'],
+  })
+  assert.equal(first.saved, true)
+  assert.equal(first.sync.online, true)
+  assert.equal(first.sync.pendingWrites, 0)
+
+  // The Worker now answers slower than the inline write budget.
+  cloud.state.slowNotesMs = 800
+  const slow = await callTool(agent, 'project_memory_note_append', {
+    title: 'slow note',
+    body: '## body\n\nqueued, not lost',
+    tags: ['经验'],
+  })
+  assert.equal(slow.saved, true)
+  assert.equal(slow.sync.online, true, 'a budget timeout with a queued write is not offline')
+  assert.equal(slow.sync.stale, false)
+  assert.equal(slow.sync.pendingWrites, 1, 'the write stays queued')
+  assert.equal(slow.sync.failedWrites, 0)
+  assert.equal(slow.sync.error.kind, 'timeout')
+  assert.equal(JSON.stringify(slow.sync).includes(TOKEN), false)
+
+  // The next write retries the queue; nothing was dropped or duplicated.
+  cloud.state.slowNotesMs = 0
+  const next = await callTool(agent, 'project_memory_note_append', {
+    title: 'after note',
+    body: '## body\n\ndrained',
+    tags: ['工程'],
+  })
+  assert.equal(next.sync.online, true)
+  assert.equal(next.sync.pendingWrites, 0, 'the outbox drains on the next write')
+  assert.equal(next.sync.error, undefined)
+
+  const read = await callTool(agent, 'project_memory_notes_read', { limit: 10 })
+  assert.deepEqual(
+    new Set(read.notes.map((note) => note.title)),
+    new Set(['first note', 'slow note', 'after note']),
+  )
 })
 
 test('apply selects the cloudflare backend from environment config without touching the network', async () => {

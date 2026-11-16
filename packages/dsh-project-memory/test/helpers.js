@@ -117,3 +117,49 @@ export async function callTool(agent, name, args = {}, exec = {}) {
 export async function writeCatalog(file, value) {
   await writeFile(file, JSON.stringify(value, null, 2))
 }
+
+/** Resolve after `ms`, or reject with the signal's reason as soon as it aborts. */
+export function sleepOrAbort(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (!signal) {
+      setTimeout(resolve, ms)
+      return
+    }
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason ?? Object.assign(new Error('aborted'), { name: 'AbortError' }))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/** A promise that only settles when the signal aborts (or after `fallbackMs`). */
+export function waitForAbort(signal, fallbackMs = 5_000) {
+  return new Promise((resolve, reject) => {
+    if (!signal) {
+      setTimeout(resolve, fallbackMs)
+      return
+    }
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, fallbackMs)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason ?? Object.assign(new Error('aborted'), { name: 'AbortError' }))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}

@@ -13,6 +13,8 @@ const cleanEnv = {
   DSH_PROJECT_MEMORY_TOKEN: undefined,
   DSH_PROJECT_MEMORY_KEYCHAIN_SERVICE: undefined,
   DSH_PROJECT_MEMORY_KEYCHAIN_ACCOUNT: undefined,
+  DSH_PROJECT_MEMORY_CLOUD_WRITE_BUDGET_MS: undefined,
+  DSH_PROJECT_MEMORY_CLOUD_PULL_BUDGET_MS: undefined,
 }
 
 function envWith(extra = {}) {
@@ -75,6 +77,61 @@ test('cloud.json selects cloudflare and env/plugin config override it', async ()
     cloudflare: { url: 'https://ok.example.workers.dev', proxy: 'http://127.0.0.1:15236' },
   }, { env: envWith(), rootDir: root })
   assert.equal(proxied.cloudflare.proxy, 'http://127.0.0.1:15236')
+})
+
+test('write and pull budgets default to 6000/15000 ms and honor plugin, env and cloud.json overrides', async () => {
+  const root = join(await tempDir('pm-config-'), 'memory')
+  const url = 'https://ok.example.workers.dev'
+
+  const defaults = await resolveBackendConfig(
+    { backend: 'cloudflare', cloudflare: { url } },
+    { env: envWith(), rootDir: root },
+  )
+  assert.equal(defaults.cloudflare.writeBudgetMs, 6_000, 'writes must outlast a slow-but-healthy Worker')
+  assert.equal(defaults.cloudflare.pullBudgetMs, 15_000, 'pulls get an independent, longer budget')
+
+  const fromPlugin = await resolveBackendConfig(
+    { backend: 'cloudflare', cloudflare: { url, writeBudgetMs: 9_000, pullBudgetMs: 25_000 } },
+    { env: envWith({ DSH_PROJECT_MEMORY_CLOUD_WRITE_BUDGET_MS: '7000', DSH_PROJECT_MEMORY_CLOUD_PULL_BUDGET_MS: '20000' }), rootDir: root },
+  )
+  assert.equal(fromPlugin.cloudflare.writeBudgetMs, 9_000, 'plugin config wins over env')
+  assert.equal(fromPlugin.cloudflare.pullBudgetMs, 25_000)
+
+  await mkdir(root, { recursive: true })
+  await writeFile(cloudConfigPath(root), JSON.stringify({ writeBudgetMs: 8_000, pullBudgetMs: 30_000 }))
+  const fromFile = await resolveBackendConfig(
+    { backend: 'cloudflare', cloudflare: { url } },
+    { env: envWith(), rootDir: root },
+  )
+  assert.equal(fromFile.cloudflare.writeBudgetMs, 8_000, 'cloud.json overrides the default')
+  assert.equal(fromFile.cloudflare.pullBudgetMs, 30_000)
+
+  const fromEnv = await resolveBackendConfig(
+    { backend: 'cloudflare', cloudflare: { url } },
+    {
+      env: envWith({
+        DSH_PROJECT_MEMORY_CLOUD_WRITE_BUDGET_MS: '11000',
+        DSH_PROJECT_MEMORY_CLOUD_PULL_BUDGET_MS: '45000',
+      }),
+      rootDir: root,
+    },
+  )
+  assert.equal(fromEnv.cloudflare.writeBudgetMs, 11_000, 'env overrides cloud.json')
+  assert.equal(fromEnv.cloudflare.pullBudgetMs, 45_000)
+
+  const clamped = await resolveBackendConfig(
+    { backend: 'cloudflare', cloudflare: { url, writeBudgetMs: 10, pullBudgetMs: 10 } },
+    { env: envWith(), rootDir: root },
+  )
+  assert.equal(clamped.cloudflare.writeBudgetMs, 500, 'writes stay within 500..30000 ms')
+  assert.equal(clamped.cloudflare.pullBudgetMs, 1_000, 'pulls stay within 1000..120000 ms')
+
+  const invalid = await resolveBackendConfig(
+    { backend: 'cloudflare', cloudflare: { url, writeBudgetMs: 'soon', pullBudgetMs: 'later' } },
+    { env: envWith(), rootDir: root },
+  )
+  assert.equal(invalid.cloudflare.writeBudgetMs, 6_000)
+  assert.equal(invalid.cloudflare.pullBudgetMs, 15_000)
 })
 
 test('explicit local ignores a cloud.json', async () => {

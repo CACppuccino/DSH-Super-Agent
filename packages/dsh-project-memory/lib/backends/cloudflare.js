@@ -23,6 +23,12 @@ import {
 } from './identity.js'
 
 const STATE_VERSION = 1
+/** Inline write-delivery budget; must outlast a slow-but-healthy Worker. */
+const DEFAULT_WRITE_BUDGET_MS = 6_000
+/** Read-only pull budget; independent from writes so pagination can finish. */
+const DEFAULT_PULL_BUDGET_MS = 15_000
+/** Notes per pull request (the Worker caps a page at 200; 50 pages quickly). */
+const PULL_NOTES_LIMIT = '50'
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -308,6 +314,15 @@ export class CloudflareBackend {
 
   noteError(error) {
     this.error = error
+    // An inline flush that merely exhausted its own budget is not a
+    // connectivity failure: the Worker may still be healthy and every queued
+    // write is safe in the outbox. Keep the status online (and the retry
+    // window open) so tool results report pending writes, not "offline"; only
+    // real network/sync failures take the backend offline.
+    if (error instanceof CloudError && error.kind === 'timeout' && this.outbox.size() > 0) {
+      this.logger?.warn?.(`dsh-project-memory: cloud sync timed out with ${this.outbox.size()} write(s) queued; keeping status online and retrying later`)
+      return
+    }
     if (!(error instanceof CloudError) || error.kind === 'network' || error.kind === 'timeout' || error.kind === 'server' || error.kind === 'rate-limit') {
       this.online = false
       this.consecutiveFailures += 1
@@ -623,7 +638,7 @@ export class CloudflareBackend {
       const flushed = await this.flush({ budgetMs: this.cloud.syncBudgetMs ?? 3_000 })
       if (flushed?.error || flushed?.offline) return
       let sawNetwork = Number(flushed?.sent ?? 0) > 0
-      const signal = AbortSignal.timeout(this.cloud.syncBudgetMs ?? 3_000)
+      const signal = AbortSignal.timeout(this.cloud.pullBudgetMs ?? DEFAULT_PULL_BUDGET_MS)
       if (list) {
         if (this.clock() - this.state.lastListAt >= (this.cloud.pullIntervalMs ?? 5_000)) {
           await this.pullProjectList({ signal })
@@ -770,7 +785,7 @@ export class CloudflareBackend {
     let first = undefined
     let latest = undefined
     while (pages < 5) {
-      const query = new URLSearchParams({ notesSinceSeq: String(cursor), notesLimit: '200' })
+      const query = new URLSearchParams({ notesSinceSeq: String(cursor), notesLimit: PULL_NOTES_LIMIT })
       if (pages === 0) query.set('includeSummary', '1')
       const result = await this.client.request(
         'GET',
@@ -884,9 +899,9 @@ export class CloudflareBackend {
       body: String(body ?? ''),
     }
     await this.outbox.enqueue('note.append', { note }, { localKey: project.key })
-    const flushed = await this.flush({ budgetMs: this.cloud.writeBudgetMs ?? 1_800 })
+    const flushed = await this.flush({ budgetMs: this.cloud.writeBudgetMs ?? DEFAULT_WRITE_BUDGET_MS })
     if (flushed?.pending > 0 && !flushed.error && !flushed.offline) {
-      await this.flush({ budgetMs: this.cloud.writeBudgetMs ?? 1_800 })
+      await this.flush({ budgetMs: this.cloud.writeBudgetMs ?? DEFAULT_WRITE_BUDGET_MS })
     }
     return result
   }
@@ -912,9 +927,9 @@ export class CloudflareBackend {
       content: summaryForCloud(stored.content),
       baseVersion: entry.summaryVersion ?? record.cloudSummaryVersion ?? 0,
     }, { localKey: project.key })
-    const flushed = await this.flush({ budgetMs: this.cloud.writeBudgetMs ?? 1_800 })
+    const flushed = await this.flush({ budgetMs: this.cloud.writeBudgetMs ?? DEFAULT_WRITE_BUDGET_MS })
     if (flushed?.pending > 0 && !flushed.error && !flushed.offline) {
-      await this.flush({ budgetMs: this.cloud.writeBudgetMs ?? 1_800 })
+      await this.flush({ budgetMs: this.cloud.writeBudgetMs ?? DEFAULT_WRITE_BUDGET_MS })
     }
     return result
   }

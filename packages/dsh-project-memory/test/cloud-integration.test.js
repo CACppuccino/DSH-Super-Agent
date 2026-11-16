@@ -1,13 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, realpath } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import worker from '../cloudflare/worker/src/index.ts'
 import { createTestD1 } from '../cloudflare/worker/test/d1-shim.ts'
 import { CloudflareBackend } from '../lib/backends/cloudflare.js'
 import { ProjectMemoryStore } from '../lib/store.js'
+import { waitForAbort } from './helpers.js'
 
 const TOKEN = 'integration-test-token-value'
 const URL_BASE = 'https://memory.test'
@@ -72,17 +73,38 @@ async function cloudIdOf(backend, key) {
   return registry.projects[key]?.cloudId
 }
 
-async function machine(harnessRef, machineId) {
+async function machine(harnessRef, machineId, { cloud = {}, fetchImpl } = {}) {
   const rootDir = await makeRoot()
   const backend = new CloudflareBackend({
     rootDir,
-    cloud: cloudConfig(machineId),
-    fetchImpl: harnessRef.fetchImpl,
+    cloud: { ...cloudConfig(machineId), ...cloud },
+    fetchImpl: fetchImpl ?? harnessRef.fetchImpl,
     autoSync: false,
     logger: { info() {}, warn() {}, error() {} },
   })
   await backend.init()
   return { backend, rootDir }
+}
+
+/** Seed `count` notes through the real Worker in batches the API accepts. */
+async function seedNotes(h, cloudId, count) {
+  const ids = []
+  for (let start = 0; start < count; start += 50) {
+    const notes = Array.from({ length: Math.min(50, count - start) }, (_, index) => {
+      const ordinal = start + index
+      ids.push(`note-seed-${ordinal}`)
+      return {
+        id: `note-seed-${ordinal}`,
+        at: Date.now(),
+        title: `seed note ${ordinal}`,
+        tags: ['工程'],
+        body: `## seed\n\nbody ${ordinal}`,
+      }
+    })
+    const response = await h.raw('POST', `/v1/projects/${encodeURIComponent(cloudId)}/notes`, { notes })
+    assert.equal(response.status, 200, JSON.stringify(response.body))
+  }
+  return ids
 }
 
 test('two machines share notes through the real Worker while keeping separate local stores', async (t) => {
@@ -384,4 +406,124 @@ test('enabling cloud mode backfills pre-existing local notes and a first summary
   assert.deepEqual(new Set(readB.notes.map((note) => note.id)), new Set([oldOne.note.id, oldTwo.note.id]))
   const summaryB = await b.backend.readSummary(recordB, { full: true })
   assert.match(summaryB.content, /pre-cloud summary/)
+})
+
+test('pull paginates notes at 50 per page, merges the summary and advances lastPulledAt', async (t) => {
+  const h = harness()
+  t.after(() => h.close())
+  const dirA = await makeRepo('git@github.com:example/paged.git')
+  const dirB = await makeRepo('git@github.com:example/paged.git')
+  const a = await machine(h, 'mac-a')
+  t.after(() => a.backend.close())
+  const recordA = await a.backend.registerProject({ path: dirA, title: 'Paged app' })
+  await a.backend.flush()
+  const cloudId = await cloudIdOf(a.backend, recordA.key)
+  assert.equal(typeof cloudId, 'string')
+
+  const seededIds = await seedNotes(h, cloudId, 120)
+  const summaryResponse = await h.raw('PUT', `/v1/projects/${encodeURIComponent(cloudId)}/summary`, {
+    content: '# Paged app\n\ncloud summary',
+    clientOpId: 'seed-paged-summary',
+  })
+  assert.equal(summaryResponse.status, 200)
+  assert.equal(summaryResponse.body.summary.version, 1)
+
+  const seen = []
+  const recordingFetch = async (url, init) => {
+    seen.push({ url: String(url), method: init?.method ?? 'GET' })
+    return h.fetchImpl(url, init)
+  }
+  const b = await machine(h, 'mac-b', { fetchImpl: recordingFetch })
+  t.after(() => b.backend.close())
+  const recordB = await b.backend.registerProject({ path: dirB, title: 'Paged app' })
+  await b.backend.flush()
+
+  const pulled = await b.backend.readNotes({ projects: [recordB], full: true })
+  assert.equal(pulled.total, 120, 'every page is indexed locally')
+  const allNotes = await b.backend.store.readAllNotes(recordB)
+  assert.deepEqual(new Set(allNotes.map((note) => note.id)), new Set(seededIds), 'every page is merged into the note log')
+  assert.equal(allNotes.find((note) => note.id === 'note-seed-119')?.body, '## seed\n\nbody 119', 'note bodies survive pagination')
+
+  const pages = seen
+    .filter((request) => request.method === 'GET' && request.url.includes(`/v1/projects/${cloudId}`))
+    .map((request) => new URL(request.url))
+  assert.equal(pages.length, 3, `three pages of 50 notes (saw ${pages.length})`)
+  assert.deepEqual(pages.map((url) => url.searchParams.get('notesLimit')), ['50', '50', '50'])
+  assert.deepEqual(pages.map((url) => url.searchParams.get('notesSinceSeq')), ['0', '50', '100'])
+
+  const entry = b.backend.state.projects[recordB.key]
+  assert.ok(entry.lastPulledAt > 0, 'lastPulledAt advances after a complete pull')
+  assert.equal(entry.notesSeq, 120)
+
+  const persisted = JSON.parse(await readFile(join(b.rootDir, '.cloud', 'sync-state.json'), 'utf8'))
+  assert.equal(persisted.projects[recordB.key].notesSeq, 120)
+  assert.ok(persisted.projects[recordB.key].lastPulledAt > 0, 'the cursor is persisted for the next pull')
+
+  const sync = b.backend.syncInfo()
+  assert.equal(sync.online, true)
+  assert.equal(sync.stale, false)
+  assert.equal(sync.pendingWrites, 0)
+
+  const localSummary = await b.backend.readSummary(recordB, { full: true })
+  assert.equal(localSummary.content, '# Paged app\n\ncloud summary\n', 'the pulled summary is merged locally')
+})
+
+test('a pull budget timeout degrades to the local cache without corrupting imported notes', async (t) => {
+  const h = harness()
+  t.after(() => h.close())
+  const dirA = await makeRepo('git@github.com:example/pull-timeout.git')
+  const dirB = await makeRepo('git@github.com:example/pull-timeout.git')
+  const a = await machine(h, 'mac-a')
+  t.after(() => a.backend.close())
+  const recordA = await a.backend.registerProject({ path: dirA, title: 'Timeout app' })
+  await a.backend.flush()
+  const cloudId = await cloudIdOf(a.backend, recordA.key)
+  const seededIds = await seedNotes(h, cloudId, 6)
+  const summaryResponse = await h.raw('PUT', `/v1/projects/${encodeURIComponent(cloudId)}/summary`, {
+    content: '# Timeout app\n\nbase summary',
+    clientOpId: 'seed-timeout-summary',
+  })
+  assert.equal(summaryResponse.status, 200)
+
+  const stall = { on: false }
+  const fetchImpl = async (url, init) => {
+    if (stall.on && (init?.method ?? 'GET') === 'GET' && String(url).includes(`/v1/projects/${cloudId}`)) {
+      await waitForAbort(init?.signal, 5_000)
+    }
+    return h.fetchImpl(url, init)
+  }
+  const b = await machine(h, 'mac-b', { cloud: { pullBudgetMs: 400, offlineBackoffMs: 50 }, fetchImpl })
+  t.after(() => b.backend.close())
+  const recordB = await b.backend.registerProject({ path: dirB, title: 'Timeout app' })
+  await b.backend.flush()
+
+  const healthy = await b.backend.readNotes({ projects: [recordB], full: true })
+  assert.equal(healthy.total, 6, 'the first pull imports every note')
+  const summaryBefore = await b.backend.readSummary(recordB, { full: true })
+  assert.equal(summaryBefore.content, '# Timeout app\n\nbase summary\n')
+
+  stall.on = true
+  const started = Date.now()
+  const degraded = await b.backend.readNotes({ projects: [recordB], full: true })
+  const elapsed = Date.now() - started
+  assert.ok(elapsed < 5_000, `the pull stops after its own budget (${elapsed} ms)`)
+  assert.equal(degraded.total, 6)
+  assert.deepEqual(new Set(degraded.notes.map((note) => note.id)), new Set(seededIds), 'the local cache survives a stalled pull')
+  const status = b.backend.syncInfo()
+  assert.equal(status.online, false, 'a real pull timeout is reported as degraded')
+  assert.equal(status.stale, true)
+  assert.equal(status.error.kind, 'timeout')
+  assert.match(status.error.message, /budget|timed out/)
+  assert.equal(status.pendingWrites, 0)
+
+  const persisted = JSON.parse(await readFile(join(b.rootDir, '.cloud', 'sync-state.json'), 'utf8'))
+  assert.equal(persisted.projects[recordB.key].notesSeq, 6, 'the last complete cursor is kept')
+  assert.ok(persisted.projects[recordB.key].lastPulledAt > 0)
+
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  stall.on = false
+  const recovered = await b.backend.readNotes({ projects: [recordB], full: true })
+  assert.equal(recovered.total, 6, 'resuming the pull does not duplicate or drop notes')
+  assert.deepEqual(new Set(recovered.notes.map((note) => note.id)), new Set(seededIds))
+  assert.equal(b.backend.syncInfo().online, true)
 })

@@ -4,5 +4,7 @@
   "url": "https://dsh-project-memory.<account-subdomain>.workers.dev",
   "machineId": "macbook-a",
   "keychainService": "dsh-project-memory",
-  "keychainAccount": "cloudflare-token"
+  "keychainAccount": "cloudflare-token",
+  "writeBudgetMs": 6000,
+  "pullBudgetMs": 15000
 }

@@ -112,9 +112,15 @@ Limits mirror the local store: title ≤ 200, body ≤ 64 Ki chars, summary ≤ 
 - Reads try a bounded sync first, then serve the local cache. If the cloud is unreachable
   the result carries `sync: {online:false, stale:true, lastSyncAt, pendingWrites, error}`.
   Nothing is written to the cache on a failed fetch.
-- Timeouts: 2.5 s default per request, 3 attempts, jittered backoff (250→2000 ms cap),
-  overall sync budget ~4 s so tool calls stay responsive. A failed sync never mutates the
-  cache; imports use the store's atomic writes and append-only note import.
+- Timeouts: 2.5 s default per request, 3 attempts, jittered backoff (250→2000 ms cap).
+  Inline write delivery has its own budget (`writeBudgetMs`, default 6 s) so a slow but
+  healthy Worker is not mistaken for an offline one; reads use `syncBudgetMs` (~4 s) for
+  local serving. An inline budget that elapses with writes still queued keeps the status
+  `online` and reports `pendingWrites` instead of flipping the backend offline. Pulling is
+  independent (`pullBudgetMs`, default 15 s): it walks the notes cursor 50 per page
+  (`notesLimit=50`, max 5 pages per pull) so multi-page pulls finish instead of being cut
+  off by the write budget. A failed sync never mutates the cache; imports use the store's
+  atomic writes and append-only note import.
 - Networks that block `*.workers.dev` directly (DNS poisoning or SNI reset) can set a
   per-machine HTTP CONNECT proxy in `cloud.json` (`--proxy http://127.0.0.1:<port>`).
   Node 22 fetch ignores `HTTPS_PROXY`, so the client ships a dependency-free CONNECT

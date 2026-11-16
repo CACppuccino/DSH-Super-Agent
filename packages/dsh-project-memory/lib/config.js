@@ -145,6 +145,20 @@ export async function resolveBackendConfig(raw = {}, { env = process.env, rootDi
     autoSync: raw.autoSync !== false && env.DSH_PROJECT_MEMORY_AUTO_SYNC !== '0' && value.autoSync !== false,
     autoSyncIntervalMs: integer(rawCloud.autoSyncIntervalMs ?? value.autoSyncIntervalMs, 30_000, { min: 5_000, max: 600_000 }),
     syncBudgetMs: integer(rawCloud.syncBudgetMs ?? value.syncBudgetMs, 4_000, { min: 500, max: 20_000 }),
+    // Inline write delivery gets its own budget: a slow-but-healthy Worker must
+    // not be mistaken for an offline one (the outbox keeps retrying).
+    writeBudgetMs: integer(
+      rawCloud.writeBudgetMs ?? env.DSH_PROJECT_MEMORY_CLOUD_WRITE_BUDGET_MS ?? value.writeBudgetMs,
+      6_000,
+      { min: 500, max: 30_000 },
+    ),
+    // Pulling notes is read-only pagination; give it a longer, independent budget
+    // so a multi-page pull is not cut off by the inline write budget.
+    pullBudgetMs: integer(
+      rawCloud.pullBudgetMs ?? env.DSH_PROJECT_MEMORY_CLOUD_PULL_BUDGET_MS ?? value.pullBudgetMs,
+      15_000,
+      { min: 1_000, max: 120_000 },
+    ),
     userAgent: 'dsh-project-memory/0.2 (+cloudflare)',
   }
 

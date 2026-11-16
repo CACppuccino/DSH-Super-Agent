@@ -30,7 +30,8 @@ export const inject = ['agents', 'skills', 'tools']
  *
  * Config (all optional): `backend` (`auto` | `local` | `cloudflare`) and a
  * `cloudflare` block (`url`, `machineId`, `keychainService`, `keychainAccount`,
- * `timeoutMs`, …). Environment variables and `<root>/cloud.json` fill the same
+ * `timeoutMs`, `writeBudgetMs`, `pullBudgetMs`, …). Environment variables and
+ * `<root>/cloud.json` fill the same
  * fields; the bearer token itself only comes from the macOS Keychain (or
  * `DSH_PROJECT_MEMORY_TOKEN` for headless use).
  *

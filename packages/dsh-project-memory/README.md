@@ -307,6 +307,8 @@ dsh plugin --profile desktop remove @local/dsh-project-memory
 | `DSH_PROJECT_MEMORY_TOKEN` | — | 仅 headless/CI；桌面版用 Keychain，不写环境变量 |
 | `DSH_PROJECT_MEMORY_IDENTITY` | — | 手动覆盖项目身份（`git:host/path` 或 `title:slug`） |
 | `DSH_PROJECT_MEMORY_AUTO_SYNC` | `1` | `0` 关闭后台 30s 重放（前台读写仍会尝试同步） |
+| `DSH_PROJECT_MEMORY_CLOUD_WRITE_BUDGET_MS` | `6000` | 单次内联写同步预算（毫秒）；用尽后写入留在 outbox 等下次重放，不会仅因此报离线 |
+| `DSH_PROJECT_MEMORY_CLOUD_PULL_BUDGET_MS` | `15000` | 单次拉取预算（毫秒），独立于写预算；每页 50 条 notes，逐页跟进游标 |
 | `DSH_PROJECT_MEMORY_PROXY` | — | 可选：本地 HTTP CONNECT 代理（如 `http://127.0.0.1:15236`），用于本机网络拦截 `*.workers.dev` 的情况 |
 
 本机云配置写在 `$DSH_HOME/state/dsh-project-memory/cloud.json`（0600，不含 token）；
@@ -359,6 +361,10 @@ cloudflare 后端下，每个 `project_memory_*` 结果多一个 `sync` 对象�
 
 离线/超时会变成 `online:false, stale:true, error:{kind:"network"}`；这时读取来自本地
 缓存，写入照常成功但 `pendingWrites > 0`。达到 `stale` 时请勿假设另一台 Mac 已看到内容。
+
+内联写同步只是预算用尽（`error.kind:"timeout"`，写仍在 outbox）时，状态保持
+`online:true`，只体现为 `pendingWrites > 0`，下一次读写会继续重放；真正的网络/认证
+失败才会把 `online` 置为 `false`。
 
 ### 当前部署（非机密）
 
