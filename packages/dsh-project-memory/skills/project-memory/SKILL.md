@@ -55,6 +55,19 @@ description: Read and write two-layer per-project memory (Super Agent summaries 
 > 必须显式传一次 `project`（实际项目路径）；若 workspace 是项目子目录，会自动解析到
 > 所属项目根。绑定后本会话不可切换项目。
 
+## 会话开始检查（重要）
+
+- **Super Agent**：每个新会话/任务开始、做实质工作前，先调用 `project_memory_projects`
+  一次，再对绑定/根项目调用 `project_memory_summary_read`（compact）。如果没有任何相关
+  项目，明确说明“没有相关项目记忆”再继续；任务收尾后更新受影响项目的 summary。
+- **Worker**：开始前先调用 `project_memory_notes_read` 读自己绑定项目的 notes；没有相关
+  记忆就说明后继续。任务收尾后追加一条带 tag 的 detail note（summary 由 Super Agent 维护）。
+- 系统提示词会在角色说明后注入 **Memory index** 区块（仅 Super Agent）：按 `updatedAt`
+  倒序、每个项目一行（title / key / 更新时间 / note 数 / summary 前约 120 字符），整块受
+  字符上限约束、按 `memoryIndexRefreshMs` 重建。它只是**上下文索引，不是权威**；
+  引用其中内容前先 `project_memory_summary_read` 核实。
+- 这些是提示词层面的约定，不是新的门禁：没做会话开始检查不会阻止其他工具调用。
+
 ## 项目解析
 
 `project` 参数接受：
@@ -146,7 +159,7 @@ Worker 只能使用自己绑定项目的 key/路径。写操作会按 canonical 
 
 ## Super Agent 使用约定
 
-1. **每个用户请求开始时**：先判断这次内容涉及哪些项目；如果是跨项目问题，先读相关项目的 summary（compact），再决定是否读 notes。
+1. **每个新会话/任务开始（做实质工作前）**：先调用一次 `project_memory_projects`，再对绑定/根项目调用 `project_memory_summary_read`（compact）；如果没有任何相关项目，明确说明“没有相关项目记忆”后再继续。随后判断这次内容涉及哪些项目；如果是跨项目问题，先读相关项目的 summary（compact），再决定是否读 notes。
 2. **派 worker 前**：brief 里写明目标项目路径；如果 workspace 是父目录（如 `/Users/me/Projects`），要求 worker 第一次记忆调用时传 `project`，一次绑定。
 3. **重大决策 / 一个任务收尾后**：更新受影响项目的 summary —— `replace` 用于当前状态，`append` 用于时间线；多项目用 `writes` 一次写完。
 4. **不要写 detail notes**（那是 worker 的层）；需要记录过程细节时，让执行该工作的 worker 去写。

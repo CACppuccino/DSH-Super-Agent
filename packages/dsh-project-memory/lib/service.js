@@ -1,6 +1,8 @@
 import { identityForAgent, findCatalogWorkspace } from './catalog.js'
 import { MemoryError, skillRequiredMessage } from './errors.js'
 import { isSkillLoaded } from './gate.js'
+import { OPENING_CHECK_SUPER, OPENING_CHECK_WORKER } from './guidance.js'
+import { DEFAULT_MAX_CHARS, DEFAULT_REFRESH_MS, buildMemoryIndex } from './memory-index.js'
 import { canonicalProjectPath, isoTimestamp, projectKeyFor } from './projects.js'
 import { isInside, resolveWorkerScope } from './project-root.js'
 import { GUIDE_TOOL, SKILL_NAME, loadSkillDefinition } from './skill.js'
@@ -102,9 +104,10 @@ export class ProjectMemoryService {
    *   skill: {name: string, description: string, content: string},
    *   logger?: {info?: Function, warn?: Function},
    *   clock?: () => number,
+   *   memoryIndex?: {enabled?: boolean, maxChars?: number, refreshMs?: number},
    * }} options
    */
-  constructor({ store, catalog, skills, skill, logger, clock = Date.now }) {
+  constructor({ store, catalog, skills, skill, logger, clock = Date.now, memoryIndex }) {
     this.store = store
     this.catalog = catalog
     this.skills = skills
@@ -116,6 +119,12 @@ export class ProjectMemoryService {
     this.loadedAgents = new Set()
     this.disposed = false
     this.loggedFallback = false
+    this.indexConfig = {
+      enabled: memoryIndex?.enabled !== false,
+      maxChars: Number.isSafeInteger(memoryIndex?.maxChars) ? memoryIndex.maxChars : DEFAULT_MAX_CHARS,
+      refreshMs: Number.isSafeInteger(memoryIndex?.refreshMs) ? memoryIndex.refreshMs : DEFAULT_REFRESH_MS,
+    }
+    this.indexState = { text: '', attemptAt: 0, dirty: false, promise: undefined }
   }
 
   /** Synchronous role lookup used while an agent scope is being decorated. */
@@ -155,12 +164,29 @@ export class ProjectMemoryService {
         order: 9998,
         interpolate: false,
         text: identity.role === 'super'
-          ? `Project memory is enabled and is an orchestration capability, not host work: use it directly. Load the project-memory skill with project_memory_guide before the first memory tool. You own the summary layer: write one summary per affected project, and read workers' detail notes from any project. Decide which project(s) content belongs to before writing. When dispatching a worker into a broad parent workspace (for example /Users/me/Projects), include the actual project path in the brief and tell the worker to pass it once to its first memory call so it binds to that project root.${this.store?.backendName === 'cloudflare' ? ' Memory is shared across machines: results carry a `sync` block; if it reports stale/offline, say so when relying on old memory and never assume a queued write reached the other machine yet.' : ''}`
-          : `Project memory is enabled for your workspace. Load the project-memory skill with the skill tool before the first memory tool. You own tagged detail notes for exactly one bound project; summaries and other projects' notes are not available. If the assigned workspace is a broad parent (for example /Users/me/Projects), pass the actual project path once to bind; a workspace inside a project resolves to that project root.${this.store?.backendName === 'cloudflare' ? ' Memory is shared across machines: results carry a `sync` block, and a queued write may not have reached the cloud yet.' : ''}`,
+          ? `Project memory is enabled and is an orchestration capability, not host work: use it directly. Load the project-memory skill with project_memory_guide before the first memory tool. You own the summary layer: write one summary per affected project, and read workers' detail notes from any project. Decide which project(s) content belongs to before writing. When dispatching a worker into a broad parent workspace (for example /Users/me/Projects), include the actual project path in the brief and tell the worker to pass it once to its first memory call so it binds to that project root. ${OPENING_CHECK_SUPER}${this.store?.backendName === 'cloudflare' ? ' Memory is shared across machines: results carry a `sync` block; if it reports stale/offline, say so when relying on old memory and never assume a queued write reached the other machine yet.' : ''}`
+          : `Project memory is enabled for your workspace. Load the project-memory skill with the skill tool before the first memory tool. You own tagged detail notes for exactly one bound project; summaries and other projects' notes are not available. If the assigned workspace is a broad parent (for example /Users/me/Projects), pass the actual project path once to bind; a workspace inside a project resolves to that project root. ${OPENING_CHECK_WORKER}${this.store?.backendName === 'cloudflare' ? ' Memory is shared across machines: results carry a `sync` block, and a queued write may not have reached the cloud yet.' : ''}`,
       })
       if (typeof section === 'function') disposers.push(section)
     } catch (error) {
       this.logger?.warn?.(`dsh-project-memory: could not add the prompt section for ${agent.id}: ${String(error)}`)
+    }
+    // The compact index is Super-Agent-only: it excerpts every project's
+    // summary, which workers are not allowed to read. Its text provider is
+    // evaluated at prompt-build time and always returns the last good cache.
+    if (identity.role === 'super' && this.indexConfig.enabled) {
+      try {
+        const indexSection = agent.ctx?.systemPrompt?.section?.({
+          name: 'dsh-project-memory:index',
+          order: 9999,
+          interpolate: false,
+          text: () => this.memoryIndexText(),
+        })
+        if (typeof indexSection === 'function') disposers.push(indexSection)
+        void this.refreshMemoryIndexIfStale().catch(() => {})
+      } catch (error) {
+        this.logger?.warn?.(`dsh-project-memory: could not add the memory index section for ${agent.id}: ${String(error)}`)
+      }
     }
     this.agents.set(agent.id, { identity, disposers, tools: definitions.map((definition) => definition.name) })
     if (identity.source === 'fallback' && !this.loggedFallback) {
@@ -202,6 +228,82 @@ export class ProjectMemoryService {
   withSync(value) {
     const sync = this.syncInfo()
     return sync === undefined ? value : { ...value, sync }
+  }
+
+  // ------------------------------------------------------------ memory index
+
+  /**
+   * Rebuild the cached prompt index now and return its text. Never throws: a
+   * failed build keeps the previous text (or nothing) and logs a warning.
+   */
+  async refreshMemoryIndex() {
+    if (!this.indexConfig.enabled) {
+      this.indexState.text = ''
+      this.indexState.attemptAt = 0
+      return ''
+    }
+    this.indexState.dirty = true
+    if (this.indexState.promise) return this.indexState.promise
+    const promise = (async () => {
+      try {
+        let passes = 0
+        while (this.indexState.dirty && !this.disposed && passes < 3) {
+          passes += 1
+          this.indexState.dirty = false
+          const text = await buildMemoryIndex({
+            store: this.store,
+            maxChars: this.indexConfig.maxChars,
+            logger: this.logger,
+          })
+          if (this.disposed) break
+          this.indexState.text = text
+        }
+        return this.indexState.text
+      } catch (error) {
+        this.logger?.warn?.(`dsh-project-memory: memory index rebuild failed; keeping the previous index: ${String(error?.message ?? error)}`)
+        return this.indexState.text
+      } finally {
+        // A change requested during the last pass would otherwise wait for the
+        // next cadence; keep the cache marked stale so the next assembly retries.
+        this.indexState.attemptAt = this.indexState.dirty ? 0 : this.clock()
+        this.indexState.dirty = false
+      }
+    })()
+    this.indexState.promise = promise
+    try {
+      return await promise
+    } finally {
+      if (this.indexState.promise === promise) this.indexState.promise = undefined
+    }
+  }
+
+  /** Rebuild only when the refresh cadence elapsed; used on agent creation. */
+  async refreshMemoryIndexIfStale() {
+    if (!this.indexConfig.enabled) return ''
+    if (this.indexState.attemptAt > 0 && this.clock() - this.indexState.attemptAt < this.indexConfig.refreshMs) {
+      return this.indexState.text
+    }
+    return this.refreshMemoryIndex()
+  }
+
+  /**
+   * Cached index text for prompt assembly. A stale cache returns immediately
+   * and kicks a background rebuild; prompt assembly never waits on disk I/O.
+   */
+  memoryIndexText() {
+    if (!this.indexConfig.enabled || this.disposed) return ''
+    if (this.indexState.attemptAt === 0 || this.clock() - this.indexState.attemptAt >= this.indexConfig.refreshMs) {
+      void this.refreshMemoryIndexIfStale().catch(() => {})
+    }
+    return this.indexState.text
+  }
+
+  /** Mark the index stale after a memory change and rebuild in the background. */
+  invalidateMemoryIndex() {
+    if (!this.indexConfig.enabled || this.disposed) return
+    this.indexState.attemptAt = 0
+    this.indexState.dirty = true
+    void this.refreshMemoryIndex().catch(() => {})
   }
 
   /** Tool definitions visible to one role. */
@@ -375,6 +477,7 @@ export class ProjectMemoryService {
       })
       added = publicProject(record)
     }
+    if (added) this.invalidateMemoryIndex()
     const { projects, total } = await this.store.listProjects({ limit: args.limit })
     const registeredPaths = new Set(projects.map((project) => project.path))
     let knownWorkspaces = []
@@ -430,6 +533,7 @@ export class ProjectMemoryService {
         updatedAt: result.updatedAt,
       })
     }
+    this.invalidateMemoryIndex()
     return this.withSync({
       saved: true,
       written,
@@ -467,6 +571,7 @@ export class ProjectMemoryService {
       authorRole: 'worker',
       authorId: agent.id,
     })
+    this.invalidateMemoryIndex()
     return this.withSync({
       saved: true,
       id: result.note.id,

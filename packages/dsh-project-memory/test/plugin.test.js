@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, stat } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { apply } from '../index.js'
 import { FakeAgent, catalogFor, tempDir, writeCatalog } from './helpers.js'
@@ -107,6 +107,62 @@ test('agent/created decorates a worker and agent/disposed releases it', async ()
     assert.deepEqual([...agent.tools.keys()].sort(), ['project_memory_note_append', 'project_memory_notes_read'])
     for (const handler of handlers.get('agent/disposed')) handler({ agent })
     assert.equal(agent.tools.size, 0)
+  })
+})
+
+test('apply injects the compact memory index after the role section', async () => {
+  const stateDir = await tempDir('pm-plugin-index-')
+  const memoryDir = join(stateDir, 'memory')
+  const now = Date.UTC(2025, 0, 2, 3, 4, 5)
+  await mkdir(join(memoryDir, 'projects', 'demo-seed'), { recursive: true })
+  await writeFile(join(memoryDir, 'projects', 'demo-seed', 'summary.md'), '# Seed\n\nSeeded summary for the prompt index.\n')
+  await writeFile(join(memoryDir, 'registry.json'), JSON.stringify({
+    version: 1,
+    updatedAt: now,
+    projects: {
+      'demo-seed': {
+        key: 'demo-seed',
+        path: '/tmp/demo-seed',
+        title: 'Seeded project',
+        createdAt: now,
+        updatedAt: now,
+        summaryUpdatedAt: now,
+        summaryChars: 40,
+        noteCount: 2,
+        lastNoteAt: null,
+        indexBytes: 0,
+      },
+    },
+  }))
+  const catalog = catalogFor({ superPath: '/tmp/super' })
+  await writeCatalog(join(stateDir, 'state.json'), catalog)
+  const agent = new FakeAgent('super-1', { cwd: '/tmp/super' })
+  const { ctx } = fakeContext([agent])
+  await withEnv({ DSH_PROJECT_MEMORY_DIR: memoryDir, DSH_SUPERAGENT_STATE_DIR: stateDir }, async () => {
+    await apply(ctx)
+    const names = agent.sections.map((section) => section.name)
+    assert.deepEqual(names, ['dsh-project-memory:role', 'dsh-project-memory:index'])
+    const index = agent.sections.find((section) => section.name === 'dsh-project-memory:index')
+    assert.equal(index.order, 9999)
+    assert.match(index.text(), /Memory index \(context, not authority; verify before relying\):/)
+    assert.match(index.text(), /Seeded project \/ demo-seed \/ updated 2025-01-02T03:04:05\.000Z \/ notes 2 \/ Seed Seeded summary for the prompt index\./)
+  })
+})
+
+test('apply omits the memory index when DSH_PROJECT_MEMORY_INDEX=0', async () => {
+  const stateDir = await tempDir('pm-plugin-index-off-')
+  const memoryDir = join(stateDir, 'memory')
+  const catalog = catalogFor({ superPath: '/tmp/super' })
+  await writeCatalog(join(stateDir, 'state.json'), catalog)
+  const agent = new FakeAgent('super-1', { cwd: '/tmp/super' })
+  const { ctx } = fakeContext([agent])
+  await withEnv({
+    DSH_PROJECT_MEMORY_DIR: memoryDir,
+    DSH_SUPERAGENT_STATE_DIR: stateDir,
+    DSH_PROJECT_MEMORY_INDEX: '0',
+  }, async () => {
+    await apply(ctx)
+    assert.deepEqual(agent.sections.map((section) => section.name), ['dsh-project-memory:role'])
   })
 })
 

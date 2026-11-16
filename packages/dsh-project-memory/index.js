@@ -16,7 +16,7 @@
  */
 import { createCatalogReader, defaultSuperAgentStateFile } from './lib/catalog.js'
 import { createBackend } from './lib/backends/create.js'
-import { resolveBackendConfig } from './lib/config.js'
+import { resolveBackendConfig, resolveMemoryIndexConfig } from './lib/config.js'
 import { defaultMemoryRoot } from './lib/projects.js'
 import { ProjectMemoryService } from './lib/service.js'
 import { loadSkillDefinition, registerSkill } from './lib/skill.js'
@@ -28,11 +28,12 @@ export const inject = ['agents', 'skills', 'tools']
 /**
  * Mount the plugin.
  *
- * Config (all optional): `backend` (`auto` | `local` | `cloudflare`) and a
+ * Config (all optional): `backend` (`auto` | `local` | `cloudflare`), a
  * `cloudflare` block (`url`, `machineId`, `keychainService`, `keychainAccount`,
- * `timeoutMs`, `writeBudgetMs`, `pullBudgetMs`, …). Environment variables and
- * `<root>/cloud.json` fill the same
- * fields; the bearer token itself only comes from the macOS Keychain (or
+ * `timeoutMs`, `writeBudgetMs`, `pullBudgetMs`, …), and the prompt index knobs
+ * `memoryIndex` (boolean), `memoryIndexMaxChars`, `memoryIndexRefreshMs`.
+ * Environment variables and `<root>/cloud.json` fill the backend fields; the
+ * bearer token itself only comes from the macOS Keychain (or
  * `DSH_PROJECT_MEMORY_TOKEN` for headless use).
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx
@@ -52,7 +53,11 @@ export async function apply(ctx, rawConfig = {}) {
     skill,
     logger: ctx.logger,
     clock: Date.now,
+    memoryIndex: resolveMemoryIndexConfig(rawConfig ?? {}),
   })
+  // Warm the prompt index once at mount so the Super Agent's first turn sees
+  // existing project memory; later rebuilds are lazy/background.
+  await service.refreshMemoryIndex()
 
   ctx.effect(() => registerSkill(ctx, skill), 'dsh-project-memory: project-memory skill')
   ctx.effect(() => ctx.on('agent/created', ({ agent }) => service.registerAgent(agent)), 'dsh-project-memory: decorate agents')
@@ -77,7 +82,7 @@ export async function apply(ctx, rawConfig = {}) {
   }
 }
 
-export { createBackend, resolveBackendConfig }
+export { createBackend, resolveBackendConfig, resolveMemoryIndexConfig }
 export { CloudflareBackend } from './lib/backends/cloudflare.js'
 export { LocalFileBackend } from './lib/backends/local.js'
 export { defaultMemoryRoot, defaultSuperAgentStateFile, ProjectMemoryService, ProjectMemoryStore }

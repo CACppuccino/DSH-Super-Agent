@@ -199,13 +199,32 @@ $DSH_HOME/state/dsh-project-memory/
 
 ## Super Agent 使用约定
 
-1. **每个用户请求开始时**：先判断这次内容涉及哪些项目；如果是跨项目问题，先读相关项目的 summary（compact），再决定是否读 notes。
+1. **每个新会话/任务开始（做实质工作前）**：先调用一次 `project_memory_projects`，再对绑定/根项目调用 `project_memory_summary_read`（compact）；如果没有任何相关项目，明确说明“没有相关项目记忆”后再继续。随后判断这次内容涉及哪些项目；如果是跨项目问题，先读相关项目的 summary（compact），再决定是否读 notes。
 2. **派 worker 前**：brief 里写明目标项目路径；如果 workspace 是父目录（如 `/Users/me/Projects`），要求 worker 第一次记忆调用时传 `project`，一次绑定。
 3. **重大决策 / 一个任务收尾后**：更新受影响项目的 summary —— `replace` 用于当前状态，`append` 用于时间线；多项目用 `writes` 一次写完。
 4. **不要写 detail notes**（那是 worker 的层）；需要记录过程细节时，让执行该工作的 worker 去写。
 5. **读 notes 时先过滤**：用 `tags` / `since` / `limit`，默认 compact；确需全文才 `full: true`。
 6. **summary 是给"下一次的自己"看的**：写当前状态、关键决策、未完成/风险、相关 note 主题；不要堆原始日志。
 7. **引用 note 时说清 project + title**，便于回查。
+
+### 注入的 Memory index（Super Agent 专用）
+
+Super Agent 的系统提示词里，紧跟角色说明之后会注入一个紧凑索引：
+
+```
+Memory index (context, not authority; verify before relying):
+- <title> / <project key> / updated <ISO 时间> / notes <n> / <summary 前 ~120 字符>
+```
+
+- 按 `updatedAt`（summary 时间优先）倒序；整块最多 `memoryIndexMaxChars`（默认 1500）
+  字符，超出时保留最新几行并写明省略了多少项目。
+- 来源是本地 registry + 各项目 `summary.md`；缺失/损坏的 summary 不会让构建失败（该项目
+  只显示“无摘要”）。缓存按 `memoryIndexRefreshMs`（默认 300000 ms）重建，写入记忆后会
+  标记失效并在后台重建；组装 prompt 时永远用上一份可用缓存，不等磁盘 I/O。
+- 它只是**上下文索引，不是权威**：内容可能过期，引用前用 `project_memory_summary_read`
+  核实。设 `DSH_PROJECT_MEMORY_INDEX=0`（或插件配置 `memoryIndex: false`）可完全关闭。
+- Worker 不会看到这个索引：它包含所有项目的 summary 片段，而 worker 按权限只能接触自己
+  绑定项目的 notes。
 
 ## Skill 门禁
 
@@ -309,6 +328,9 @@ dsh plugin --profile desktop remove @local/dsh-project-memory
 | `DSH_PROJECT_MEMORY_AUTO_SYNC` | `1` | `0` 关闭后台 30s 重放（前台读写仍会尝试同步） |
 | `DSH_PROJECT_MEMORY_CLOUD_WRITE_BUDGET_MS` | `6000` | 单次内联写同步预算（毫秒）；用尽后写入留在 outbox 等下次重放，不会仅因此报离线 |
 | `DSH_PROJECT_MEMORY_CLOUD_PULL_BUDGET_MS` | `15000` | 单次拉取预算（毫秒），独立于写预算；每页 50 条 notes，逐页跟进游标 |
+| `DSH_PROJECT_MEMORY_INDEX` | `1` | `0` 关闭系统提示词里的 **Memory index** 注入（只影响 Super Agent 的提示词） |
+| `DSH_PROJECT_MEMORY_INDEX_MAX_CHARS` | `1500` | index 整块字符上限（200–6000） |
+| `DSH_PROJECT_MEMORY_INDEX_REFRESH_MS` | `300000` | index 重建间隔（毫秒，≥1000）；超时后下一次 prompt 组装在后台重建 |
 | `DSH_PROJECT_MEMORY_PROXY` | — | 可选：本地 HTTP CONNECT 代理（如 `http://127.0.0.1:15236`），用于本机网络拦截 `*.workers.dev` 的情况 |
 
 本机云配置写在 `$DSH_HOME/state/dsh-project-memory/cloud.json`（0600，不含 token）；

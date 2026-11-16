@@ -15,6 +15,8 @@ export const CLOUD_CONFIG_VERSION = 1
 export const DEFAULT_KEYCHAIN_SERVICE = 'dsh-project-memory'
 export const DEFAULT_KEYCHAIN_ACCOUNT = 'cloudflare-token'
 export const BACKEND_CHOICES = Object.freeze(['auto', 'local', 'cloudflare'])
+export const DEFAULT_MEMORY_INDEX_MAX_CHARS = 1_500
+export const DEFAULT_MEMORY_INDEX_REFRESH_MS = 300_000
 
 /** Path of the non-secret per-machine cloud config. */
 export function cloudConfigPath(rootDir) {
@@ -32,6 +34,31 @@ function integer(value, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {
   const number = Number(value)
   if (!Number.isFinite(number)) return fallback
   return Math.min(max, Math.max(min, Math.floor(number)))
+}
+
+/**
+ * Resolve the session-start memory-index prompt settings.
+ *
+ * These are prompt/UI knobs, not cloud-backend settings, so they follow
+ * `plugin config > environment > defaults` (cloud.json does not apply).
+ *
+ * @param {Record<string, unknown>} raw plugin config from the bundle row
+ * @param {{env?: NodeJS.ProcessEnv}} [options]
+ */
+export function resolveMemoryIndexConfig(raw = {}, { env = process.env } = {}) {
+  return {
+    enabled: raw.memoryIndex !== false && env.DSH_PROJECT_MEMORY_INDEX !== '0',
+    maxChars: integer(
+      raw.memoryIndexMaxChars ?? env.DSH_PROJECT_MEMORY_INDEX_MAX_CHARS,
+      DEFAULT_MEMORY_INDEX_MAX_CHARS,
+      { min: 200, max: 6_000 },
+    ),
+    refreshMs: integer(
+      raw.memoryIndexRefreshMs ?? env.DSH_PROJECT_MEMORY_INDEX_REFRESH_MS,
+      DEFAULT_MEMORY_INDEX_REFRESH_MS,
+      { min: 1_000, max: 86_400_000 },
+    ),
+  }
 }
 
 /** Validate and normalize the Worker base URL. */
