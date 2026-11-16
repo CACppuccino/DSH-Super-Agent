@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, test } from 'node:test'
-import { PendingStore, normalizeOptions, normalizePending } from '../lib/pending.js'
+import { PENDING_DECISION_CONTEXT_GUIDANCE, PendingStore, normalizeOptions, normalizePending } from '../lib/pending.js'
 
 const dirs = []
 afterEach(async () => {
@@ -80,6 +80,23 @@ test('resolve stores the first answer, is idempotent, and enforces conversation 
   const again = await store.resolve({ id: item.id, answer: 'two', conversationId: 'a' })
   assert.equal(again.changed, false)
   assert.equal(again.item.answer, 'one')
+})
+
+test('the decision-card guidance requires every decision-ready section', () => {
+  const sections = [
+    '背景 / 问题',
+    '收益（benefits）',
+    '风险（risks）',
+    '成本（costs）',
+    '门的类型（one-way / two-way door）',
+    '推荐（recommendation）',
+  ]
+  const headings = PENDING_DECISION_CONTEXT_GUIDANCE.split('\n').filter((line) => line.startsWith('## '))
+  assert.deepEqual(headings, sections.map((section) => `## ${section}`), 'every section appears once, in decision order')
+  assert.match(PENDING_DECISION_CONTEXT_GUIDANCE, /decision-ready Markdown/)
+  assert.match(PENDING_DECISION_CONTEXT_GUIDANCE, /one concrete decision/)
+  assert.match(PENDING_DECISION_CONTEXT_GUIDANCE, /short labels/)
+  assert.match(PENDING_DECISION_CONTEXT_GUIDANCE, /reversible/)
 })
 
 test('option and item normalization rejects untrusted records', () => {

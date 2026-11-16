@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readdir } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { PendingStore } from './pending.js'
+import { PENDING_DECISION_CONTEXT_GUIDANCE, PendingStore } from './pending.js'
 import { MAX_TAG_CHARS, MAX_WORKER_TAGS, normalizeTags } from './state.js'
 
 export const PLUGIN_NAME = 'dsh-super-agent'
@@ -50,8 +50,11 @@ Working rules:
 9. A worker is a persistent conversation, not a subagent. It can receive multiple assignments.
 10. Do not create a new Super Agent conversation unless the user asks for a separate thread or the work is clearly unrelated and long-running.
 11. Delegation always goes through superagent_dispatch_task. One-shot subagent, workflow, teammate, and team-task tools are unavailable; those bypass the persistent worker conversation that this panel tracks.
-12. You do not have an ask_user_question tool and its built-in cards are unavailable. When the user must choose, call superagent_pending_decision with action "create" plus the question, optional context, and options. Do not just write the question and any options as text and stop: the pending decision card is the interactive path, and the user's answer arrives as a user message in this conversation.
-13. Use superagent_worker_tags to keep related workers organized when the user names a project, theme, or workstream. Tags are short (for example "quant", "dsh", "infra"); set or replace with action "set", append with "add", and list the current assignments with "list". The user can also edit them in the panel, and filters apply to the conversation list.`
+12. You do not have an ask_user_question tool and its built-in cards are unavailable. When the user must choose, call superagent_pending_decision with action "create": ask one concrete decision in question, write the decision-ready context described below, and keep options to short labels. Do not just write the question and any options as text and stop: the pending decision card is the interactive path, and the user's answer arrives as a user message in this conversation.
+13. Use superagent_worker_tags to keep related workers organized when the user names a project, theme, or workstream. Tags are short (for example "quant", "dsh", "infra"); set or replace with action "set", append with "add", and list the current assignments with "list". The user can also edit them in the panel, and filters apply to the conversation list.
+
+Decision-card context:
+${PENDING_DECISION_CONTEXT_GUIDANCE}`
 
 /** The fixed system prompt for worker conversations. */
 export const WORKER_PROMPT = `You are a worker agent launched by the Super Agent.
@@ -473,12 +476,12 @@ const PENDING_SCHEMA = {
   additionalProperties: false,
   properties: {
     action: { type: 'string', enum: ['create', 'list', 'resolve', 'update', 'retract'], description: 'create registers a question; list returns decisions; resolve records the user answer; update revises an open card in place; retract withdraws an open card without answering.' },
-    question: { type: 'string', description: 'For create/update: the decision or question the user must answer.' },
-    context: { type: 'string', description: 'For create/update: optional background, trade-offs, or details shown under the question.' },
+    question: { type: 'string', description: 'For create/update: one concrete decision the user must make, rendered as the card heading (Markdown is supported).' },
+    context: { type: 'string', description: `For create/update: ${PENDING_DECISION_CONTEXT_GUIDANCE}` },
     options: {
       type: 'array',
       items: { type: 'string' },
-      description: 'For create/update: optional answer choices rendered as buttons. Omit for free text only.',
+      description: 'For create/update: short answer labels rendered as buttons; expand what each label means inside context. Omit for free text only.',
     },
     id: { type: 'string', description: 'For resolve/update/retract: the pending decision id returned by create or list.' },
     answer: { type: 'string', description: 'For resolve: the answer to record.' },
@@ -1787,7 +1790,9 @@ export class Orchestrator {
         EMPTY_SCHEMA,
         async () => orchestrator.listConversations()),
       tool('superagent_pending_decision',
-        'Ask the user to decide something without a round trip: action "create" registers an inline question card (optional context and option buttons) for this Super Agent conversation. Action "list" returns open decisions (optionally answered/retracted); action "resolve" records an answer. Action "update" revises the same open card in place with new question/context/options and bumps revision; action "retract" withdraws an open card without recording an answer. The panel delivers an answer back to this conversation as a user message.',
+        `Ask the user to decide something without a round trip: action "create" registers an inline question card (context and option buttons) for this Super Agent conversation. Action "list" returns open decisions (optionally answered/retracted); action "resolve" records an answer. Action "update" revises the same open card in place with new question/context/options and bumps revision; action "retract" withdraws an open card without recording an answer. The panel renders question and context as Markdown and delivers an answer back to this conversation as a user message.
+
+${PENDING_DECISION_CONTEXT_GUIDANCE}`,
         PENDING_SCHEMA,
         async (args) => orchestrator.pendingDecision({
           conversationId,

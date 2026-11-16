@@ -19,6 +19,26 @@ export const PENDING_OPTIONS_MAX = 8
 export const PENDING_ANSWER_LIMIT = 16000
 export const PENDING_RETRACT_REASON_LIMIT = 2000
 
+/**
+ * Model-facing guidance for writing a decision-ready pending card. The tool
+ * description, the Super Agent system prompt, and the tests share this text so
+ * a card always answers the same questions before the user has to choose.
+ */
+export const PENDING_DECISION_CONTEXT_GUIDANCE = `Write context as decision-ready Markdown. Keep these section headings in this order, and write the prose in the user's language:
+## 背景 / 问题
+One short paragraph: what is being decided, and why now.
+## 收益（benefits）
+What improves, with the expected value or impact.
+## 风险（risks）
+What can go wrong, whether the decision is reversible, and the blast radius.
+## 成本（costs）
+Time, engineering, spend, compute, and opportunity cost.
+## 门的类型（one-way / two-way door）
+State explicitly whether this is a one-way or a two-way door.
+## 推荐（recommendation）
+Which option and why, in 1–2 lines.
+The question is one concrete decision. Options are short labels; expand what each label means inside context.`
+
 /** True when `value` is a non-array object. */
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 

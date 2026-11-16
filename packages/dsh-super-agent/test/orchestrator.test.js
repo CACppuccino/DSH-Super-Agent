@@ -227,6 +227,30 @@ test('the Super Agent prompt delegates host work and asks in plain text', async 
   assert.match(WORKER_PROMPT, /do not use ask_user_question/)
 })
 
+test('the pending decision tool and prompt require decision-ready context', async () => {
+  const { superAgent } = await bootstrapped()
+  const pending = superAgent.tools.get('superagent_pending_decision')
+  const contextDescription = pending.parameters.properties.context.description
+  const sections = [
+    '背景 / 问题',
+    '收益（benefits）',
+    '风险（risks）',
+    '成本（costs）',
+    '门的类型（one-way / two-way door）',
+    '推荐（recommendation）',
+  ]
+  for (const section of sections) {
+    assert.equal(SUPER_PROMPT.includes(section), true, `prompt: ${section}`)
+    assert.equal(pending.description.includes(section), true, `tool: ${section}`)
+    assert.equal(contextDescription.includes(section), true, `schema: ${section}`)
+  }
+  assert.match(pending.description, /decision-ready Markdown/)
+  assert.match(contextDescription, /decision-ready Markdown/)
+  assert.match(pending.parameters.properties.question.description, /one concrete decision/)
+  assert.match(pending.parameters.properties.options.description, /short answer labels/)
+  assert.deepEqual(pending.parameters.required, ['action'], 'the schema stays backward compatible')
+})
+
 test('the pending decision tool creates, lists, and resolves items scoped to its conversation', async () => {
   const { orchestrator, host, store, superAgent, superConversation, stateDir } = await bootstrapped()
   const pending = superAgent.tools.get('superagent_pending_decision')
