@@ -486,6 +486,12 @@ test('the inline pending card renders options, free text, and an answered state'
   const open = PendingQuestionCard({ t, item, answer: '', onAnswer: async () => {}, onDismiss: () => {} })
   assert.equal(open.props['data-sa-pending-card'], 'p1')
   assert.equal(open.props['data-state'], 'open')
+  const questionNode = open.children.find((child) => child && child.props && child.props.className === 'sa-pending-question sa-markdown')
+  const contextNode = open.children.find((child) => child && child.props && child.props.className === 'sa-pending-context sa-markdown')
+  assert.equal(questionNode.children[0].type.name, 'MarkdownText', 'the question is rendered as Markdown')
+  assert.equal(questionNode.children[0].props.text, 'Which channel?')
+  assert.equal(contextNode.children[0].type.name, 'MarkdownText', 'the context is rendered as Markdown')
+  assert.equal(contextNode.children[0].props.text, 'Both builds exist.')
   const openText = JSON.stringify(open)
   assert.match(openText, /Which channel\?/)
   assert.match(openText, /Both builds exist\./)
@@ -536,6 +542,89 @@ test('the inline pending card renders options, free text, and an answered state'
 
   assert.equal(toolDetail('superagent_pending_decision', { action: 'create', question: 'Which channel?' }), 'create · Which channel?')
   assert.equal(toolDetail('superagent_pending_decision', { action: 'resolve', id: 'p1' }), 'resolve · p1')
+})
+
+test('pending cards render headings, lists, tables, code, and links through MarkdownText', async () => {
+  const plugin = await loadPlugin()
+  const { PendingQuestionCard } = plugin.__internals
+  const t = (key) => key
+  const question = '## Which release?\n\nShip **stable** or `beta` today?'
+  const context = [
+    '## 背景 / 问题',
+    'A release must be chosen today.',
+    '',
+    '## 收益（benefits）',
+    '- faster rollout',
+    '',
+    '## 风险（risks）',
+    '| risk | blast radius |',
+    '| --- | --- |',
+    '| rollback | low |',
+    '',
+    '## 成本（costs）',
+    '```js',
+    'const cost = 1',
+    '```',
+    '',
+    '[release notes](https://example.com/releases)',
+  ].join('\n')
+  const tree = PendingQuestionCard({
+    t,
+    item: { id: 'p-markdown', question, context, options: ['stable', 'beta'] },
+    answer: '',
+    onAnswer: async () => {},
+    onDismiss: () => {},
+  })
+  const questionNode = tree.children.find((child) => child && child.props && child.props.className === 'sa-pending-question sa-markdown')
+  const contextNode = tree.children.find((child) => child && child.props && child.props.className === 'sa-pending-context sa-markdown')
+  assert.ok(questionNode, 'the question uses the Markdown wrapper')
+  assert.ok(contextNode, 'the context uses the Markdown wrapper')
+  assert.equal(questionNode.children[0].type.name, 'MarkdownText')
+  assert.equal(contextNode.children[0].type.name, 'MarkdownText')
+  assert.equal(questionNode.children[0].props.text, question, 'Markdown source is passed unchanged as text')
+  assert.equal(contextNode.children[0].props.text, context)
+  assert.equal(questionNode.children[0].props.variant, 'compact')
+  assert.equal(contextNode.children[0].props.variant, 'compact')
+  assert.equal(Object.hasOwn(questionNode.children[0].props, 'dangerouslySetInnerHTML'), false)
+  assert.equal(Object.hasOwn(contextNode.children[0].props, 'dangerouslySetInnerHTML'), false)
+  const fragment = tree.children.find((child) => child && child.type === 'Fragment')
+  const options = fragment.children.find((child) => child && child.props && child.props.className === 'sa-pending-options')
+  assert.deepEqual(options.children.flat().map((button) => button.children[0]), ['stable', 'beta'], 'options stay plain button labels')
+})
+
+test('pending cards keep a safe plain-text fallback when the Markdown primitive is missing', async () => {
+  const plugin = await loadPlugin({ markdown: false })
+  const { PendingQuestionCard } = plugin.__internals
+  const t = (key) => key
+  const question = 'Ship now?\n```js\n<script>alert(1)</script>\n```'
+  const context = 'Risk: **none**'
+  const tree = PendingQuestionCard({
+    t,
+    item: { id: 'p-fallback', question, context, options: ['Yes', 'No'] },
+    answer: '',
+    onAnswer: async () => {},
+    onDismiss: () => {},
+  })
+  const questionNode = tree.children.find((child) => child && child.props && child.props.className === 'sa-pending-question sa-markdown')
+  const contextNode = tree.children.find((child) => child && child.props && child.props.className === 'sa-pending-context sa-markdown')
+  const questionParts = questionNode.children[0]
+  const contextParts = contextNode.children[0]
+  assert.ok(Array.isArray(questionParts), 'the fallback renders plain React parts')
+  assert.ok(Array.isArray(contextParts))
+  const code = questionParts.find((part) => part.type === 'pre')
+  assert.ok(code, 'fenced code keeps its block shape')
+  assert.equal(code.children[0], '<script>alert(1)</script>', 'model text stays a React child, never raw HTML')
+  assert.equal(contextParts[0].type, 'span')
+  assert.equal(contextParts[0].children[0], 'Risk: **none**', 'the fallback preserves the original text as a React child')
+  assert.equal(/dangerouslySetInnerHTML|\.innerHTML\s*=/.test(JSON.stringify(tree)), false)
+})
+
+test('pending Markdown keeps long code blocks scrollable inside the card', async () => {
+  const source = await readFile(join(import.meta.dirname, '..', 'client.js'), 'utf8')
+  assert.match(source, /\.sa-pending-question\.sa-markdown pre[^\n]*overflow-x: auto/)
+  assert.match(source, /\.sa-pending-context\.sa-markdown pre[^\n]*overflow-x: auto/)
+  assert.match(source, /\.sa-pending-question\.sa-markdown :where\(h1, h2, h3, h4, h5, h6\)[^\n]*font-size: 14px/)
+  assert.match(source, /\.sa-pending-context\.sa-markdown :where\(h1, h2, h3, h4, h5, h6\)[^\n]*font-size: 12\.5px/)
 })
 
 test('the usage request carries the active locale and a numeric timezone offset', async () => {

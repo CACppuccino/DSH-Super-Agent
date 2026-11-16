@@ -549,7 +549,14 @@ window.__ModuleLoader__.load({
   font-size: 10.5px; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
 .sa-pending-card-close { margin-left: auto; }
 .sa-pending-question { font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.sa-pending-question.sa-markdown :where(h1, h2, h3, h4, h5, h6) { margin: 8px 0 4px; font-size: 14px; line-height: 1.4; }
+.sa-pending-question.sa-markdown :where(p, ul, ol) { margin: 5px 0; }
+.sa-pending-question.sa-markdown :where(p, li) { font-size: 14px; font-weight: 600; line-height: 1.5; }
+.sa-pending-question.sa-markdown pre { max-width: 100%; overflow-x: auto; }
 .sa-pending-context { margin-top: 6px; color: var(--dsw-alias-label-secondary); font-size: 12.5px; line-height: 1.55; }
+.sa-pending-context.sa-markdown :where(h1, h2, h3, h4, h5, h6) { margin: 11px 0 4px; font-size: 12.5px; line-height: 1.4; color: var(--dsw-alias-label-primary); }
+.sa-pending-context.sa-markdown :where(p, ul, ol) { margin: 5px 0; }
+.sa-pending-context.sa-markdown pre { max-width: 100%; overflow-x: auto; }
 .sa-pending-options { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
 .sa-pending-option { max-width: 100%; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l1);
   background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; font-size: 12.5px;
@@ -2115,7 +2122,7 @@ window.__ModuleLoader__.load({
           'aria-label': t('pendingDismiss'),
           onClick: onDismiss,
         }, '×')),
-      h('div', { className: 'sa-pending-question' }, item.question),
+      h('div', { className: 'sa-pending-question sa-markdown' }, renderMarkdown(t, item.question, { variant: 'compact' })),
       item.context && h('div', { className: 'sa-pending-context sa-markdown' }, renderMarkdown(t, item.context, { variant: 'compact' })),
       answered
         ? h('div', { className: 'sa-pending-answer' },
