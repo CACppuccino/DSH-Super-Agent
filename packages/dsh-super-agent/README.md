@@ -69,6 +69,20 @@ Every dispatch is classified into a **theme** (for example `quant-research`, `ds
 
 Retirement is **reversible and non-destructive**: a retired workspace disappears from the active picker/theme list but keeps its directory, files, workspace record, and every worker conversation; `reactivate` restores it. A canonical theme workspace and the protected `Super Agent` home workspace cannot be retired. Proposed consolidation groups are **hints only**, and existing worker conversations are never moved.
 
+## Worker model
+
+A worker runs on the Super Agent's **own** provider and model by default: dispatch reads the route from the parent Session's last logged request (`Session.requestHeader()`, falling back to the Host default model for a conversation that has not sent a request yet) and installs it on the new worker Session through the Agent's model controller (`agent.model.select`, which appends the durable `model/selection` event the Host itself writes, so the route survives a cold resume). When that controller is absent, dispatch falls back to `sessionController.selectModel`. Without this, a worker Session starts on the Host default model and silently ignores a model the user picked for the Super Agent conversation.
+
+`superagent_dispatch_task` also takes optional `provider`, `model`, and `reasoning_effort`:
+
+- `model` accepts either a bare model id (`glm-5.2`, requires `provider`) or `provider/model` (`didi-global/claude-opus-5-5`);
+- an explicit route is validated against the Host LLM registry (`llm.resolveCallConfig`) **before** any Session is created, so an unregistered provider/model fails the dispatch with the Host's own reason and never falls back silently;
+- an explicit route that differs from the parent's clears the inherited reasoning effort, so the selected model resolves its own default (pass `reasoning_effort` to pin one);
+- the `sessionController.selectModel` fallback also saves the route as the Host default model; dispatch restores the previous default afterwards and serializes that select/restore pair, so a worker's model never becomes the model of the next new conversation. The preferred `agent.model.select` path writes no user setting at all;
+- every worker record and every dispatch/list result carries `model: { provider, model, reasoningEffort?, source: 'inherited' | 'explicit' | 'default', applied }`, and `applied: false` says the planned route could not be installed (the Host had no `sessionController.selectModel`), so nothing claims a model the worker is not running on.
+
+Note the difference from the `subagent` tool: `list_subagent_models` / the `subagent` route allowlist authorizes **child LLM routes of one-shot subagents**, and a Session with no recorded `subagent/model-selection-policy` event may only select its own route. Workers are ordinary Sessions, so dispatch is not bound by that allowlist; it is bound by what the Host LLM registry can actually serve.
+
 ## Model tools
 
 Super Agent sessions receive:

@@ -41,7 +41,7 @@ Planning tools such as todo_write and the goal tools stay available; they do not
 Working rules:
 1. Converse in the user's language. Greetings, explanations, and questions you can answer from context need no tools.
 2. If a request needs any host action, dispatch a worker. Do not do it yourself, even when it looks small or faster.
-3. Dispatch brief: give the worker a short title, a complete self-contained brief, and an existing workspace or a new workspace request. Include the goal, relevant paths, constraints, expected output, and how to report completion.
+3. Dispatch brief: give the worker a short title, a complete self-contained brief, and an existing workspace or a new workspace request. Include the goal, relevant paths, constraints, expected output, and how to report completion. A worker inherits your own provider and model by default; pass provider and model (or model as "provider/model") only when the user asks that a worker run on a different model, and report the route the dispatch result returns.
 4. Workspace discipline: classify every task into one theme before dispatching (quant-research, dsh-plugin, infra-ops, memory, windows-node, backup, or a more specific theme). When unsure, call superagent_workspaces with action "suggest" or "themes". If suggest returns a proposed workspace for a known but unassigned theme, pass that workspace id to dispatch (or assign it first) instead of creating a directory. Always pass theme to superagent_dispatch_task. A theme with a registered workspace is reused automatically for a new worker conversation. Only request new_workspace when the work is a genuinely separate deliverable or the theme's workspace cannot hold it; if the theme is unknown or has no registered workspace, include a justification explaining why a new directory is needed. Never create a workspace silently: report the dispatch result's theme and workspace_created fields to the user.
 5. After dispatch, tell the user which worker you started and what happens next. Do not claim work is done before a worker reports it.
 6. Worker progress arrives as notices in this conversation. Relay only meaningful updates: a result, a blocker, a decision the user must make, or a notable milestone. Combine multiple notices into one short update.
@@ -291,6 +291,16 @@ function requireString(value, field) {
   return value.trim()
 }
 
+/** Split one `provider/model` reference into its two exact parts. */
+function splitModelReference(value) {
+  const text = String(value).trim()
+  const slash = text.indexOf('/')
+  if (slash <= 0 || slash === text.length - 1) {
+    throw new Error(`model "${text}" must be either a model id or "provider/model"`)
+  }
+  return { provider: text.slice(0, slash), model: text.slice(slash + 1) }
+}
+
 /** Pick the dominant theme from a workspace's worker titles/tags, if any. */
 function dominantWorkerTheme(workers) {
   const counts = new Map()
@@ -367,6 +377,9 @@ const DISPATCH_SCHEMA = {
       },
     },
     justification: { type: 'string', description: 'Why a new workspace is genuinely needed when the theme is unknown or has no registered workspace. Never create silently.' },
+    provider: { type: 'string', description: 'Optional LLM provider id for this worker only (for example didi-global). Omit to make the worker inherit your own current provider and model. Supply it together with model, or pass model as "provider/model".' },
+    model: { type: 'string', description: 'Optional exact model id for this worker, either "model" or "provider/model" (for example didi-global/claude-opus-5-5). Omit to inherit your own current model. An explicit route must be registered on this Host, otherwise the dispatch fails with the Host reason instead of silently falling back.' },
+    reasoning_effort: { type: 'string', description: 'Optional reasoning effort for an explicitly selected worker route. Requires provider and model; omit to use the selected model\'s own default, or to keep your own effort when the worker inherits your route.' },
   },
   required: ['title', 'prompt', 'theme'],
 }
@@ -515,6 +528,9 @@ export class Orchestrator {
     this.decorated = new WeakSet()
     this.bindings = new Map()
     this.sessionLocks = new Map()
+    // Serializes worker-model application: selectModel also rewrites the Host
+    // default model, so two dispatches must not interleave select/restore.
+    this.modelQueue = Promise.resolve()
     this.decorationErrors = []
     this.runtimeErrors = []
   }
@@ -636,6 +652,7 @@ export class Orchestrator {
       lastOutput: record.lastOutput,
       tags: Array.isArray(record.tags) ? record.tags.slice() : [],
       progress: record.progress.slice(-3),
+      ...(record.model === undefined ? {} : { model: { ...record.model } }),
     }
   }
 
@@ -1179,11 +1196,174 @@ export class Orchestrator {
     }
   }
 
+  /** Queue one worker-model application so two dispatches cannot interleave. */
+  withModelQueue(run) {
+    const next = this.modelQueue.then(run, run)
+    this.modelQueue = next.then(() => undefined, () => undefined)
+    return next
+  }
+
+  /**
+   * The LLM route one conversation currently runs on.
+   *
+   * The Session's last logged request header is the authoritative selection; a
+   * conversation that has not sent a request yet falls back to the Host default
+   * model, which is what the Harness would use for it anyway.
+   */
+  currentRoute(conversationId) {
+    const agent = this.ctx.agents?.get?.(conversationId)
+    const config = agent?.session?.requestHeader?.()?.config
+    if (config && typeof config.provider === 'string' && config.provider.length > 0
+      && typeof config.model === 'string' && config.model.length > 0) {
+      return {
+        provider: config.provider,
+        model: config.model,
+        ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort.length > 0
+          ? { reasoningEffort: config.reasoningEffort }
+          : {}),
+      }
+    }
+    const fallback = this.ctx.get?.('agentDefaultModel')?.currentSelection?.()
+    if (fallback && typeof fallback.provider === 'string' && fallback.provider.length > 0
+      && typeof fallback.model === 'string' && fallback.model.length > 0) {
+      return {
+        provider: fallback.provider,
+        model: fallback.model,
+        ...(fallback.reasoningEffort === undefined ? {} : { reasoningEffort: String(fallback.reasoningEffort) }),
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * Resolve the route a dispatch must install on its worker.
+   *
+   * An explicit provider/model wins; otherwise the worker inherits this Super
+   * Agent conversation's own route, which is the whole point: the panel's
+   * workers must not silently drop to the Host default model. `source` records
+   * which of the two happened, and `default` means the Host could not name a
+   * route so the worker keeps the Harness default.
+   */
+  dispatchRoute({ parentId, provider, model, reasoningEffort }) {
+    const explicitProvider = typeof provider === 'string' ? provider.trim() : ''
+    const explicitModel = typeof model === 'string' ? model.trim() : ''
+    const explicitEffort = typeof reasoningEffort === 'string' ? reasoningEffort.trim() : ''
+    const parent = this.currentRoute(parentId)
+    if (explicitProvider.length === 0 && explicitModel.length === 0) {
+      if (explicitEffort.length > 0) {
+        throw new Error('child LLM `reasoning_effort` requires both `provider` and `model`; omit it to inherit your own route')
+      }
+      return parent === undefined ? { source: 'default' } : { ...parent, source: 'inherited' }
+    }
+    let providerId = explicitProvider
+    let modelId = explicitModel
+    if (modelId.includes('/')) {
+      const split = splitModelReference(modelId)
+      if (providerId.length > 0 && providerId !== split.provider) {
+        throw new Error(`model "${modelId}" names provider "${split.provider}" but provider "${providerId}" was also passed; pass one or the other`)
+      }
+      providerId = split.provider
+      modelId = split.model
+    }
+    if (providerId.length === 0 || modelId.length === 0) {
+      throw new Error('child LLM `provider` and `model` must be supplied together; omit both to inherit your own model')
+    }
+    const keepsParentRoute = parent !== undefined && parent.provider === providerId && parent.model === modelId
+    const inheritedEffort = explicitEffort.length === 0 && keepsParentRoute && parent.reasoningEffort !== undefined
+      ? { reasoningEffort: parent.reasoningEffort }
+      : {}
+    return {
+      provider: providerId,
+      model: modelId,
+      ...(explicitEffort.length > 0 ? { reasoningEffort: explicitEffort } : inheritedEffort),
+      source: 'explicit',
+    }
+  }
+
+  /** Reject an explicit route the Host cannot serve before any Session is created. */
+  async preflightDispatchRoute(route) {
+    if (!route || route.source !== 'explicit') return
+    const llm = this.ctx.get?.('llm')
+    if (!llm || typeof llm.resolveCallConfig !== 'function') return
+    try {
+      await llm.resolveCallConfig({
+        provider: route.provider,
+        model: route.model,
+        ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Cannot dispatch a worker with model "${route.provider}/${route.model}": ${message}. Omit provider/model to inherit your own route.`)
+    }
+  }
+
+  /**
+   * Install one route on a freshly created worker Session.
+   *
+   * The Agent's own model controller is the narrowest path: it appends the
+   * durable `model/selection` event the Host itself writes, so the worker keeps
+   * the route across a cold resume and no user setting is touched. When that
+   * controller is missing, the public `sessionController.selectModel` does the
+   * same thing but also saves the route as the Host default model, so the
+   * previous default is restored afterwards and a worker's model never becomes
+   * the model of the next new conversation.
+   */
+  async applyDispatchRoute(agent, route) {
+    if (!route || route.provider === undefined || route.model === undefined) return undefined
+    const selection = {
+      provider: route.provider,
+      model: route.model,
+      ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
+    }
+    const modelController = agent?.model
+    if (modelController && typeof modelController.select === 'function') {
+      modelController.select(selection)
+      return { ...selection }
+    }
+    const controller = this.ctx.sessionController
+    const selectModel = controller?.selectModel
+    if (typeof selectModel !== 'function') {
+      if (route.source === 'explicit') {
+        throw new Error('this Harness cannot select a worker model (neither the Agent model controller nor sessionController.selectModel is available); omit provider/model to dispatch on the Host default model')
+      }
+      this.ctx.logger?.warn?.('dsh-super-agent: no worker model controller is available; the worker keeps the Host default model')
+      return undefined
+    }
+    const sessionId = agent?.id
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return undefined
+    return this.withModelQueue(async () => {
+      const defaults = this.ctx.get?.('agentDefaultModel')
+      const previous = typeof defaults?.currentSelection === 'function' ? defaults.currentSelection() : undefined
+      try {
+        const result = await selectModel.call(controller, { sessionId, ...selection })
+        const selected = result && typeof result === 'object' ? result.selected : undefined
+        const applied = selected && typeof selected.provider === 'string' && typeof selected.model === 'string'
+          ? selected
+          : selection
+        return {
+          provider: applied.provider,
+          model: applied.model,
+          ...(applied.reasoningEffort === undefined ? {} : { reasoningEffort: String(applied.reasoningEffort) }),
+        }
+      } finally {
+        if (previous !== undefined && typeof defaults?.saveSelection === 'function') {
+          try {
+            await defaults.saveSelection(previous)
+          } catch (error) {
+            this.ctx.logger?.warn?.(`dsh-super-agent: worker model applied but the Host default model was not restored: ${String(error)}`)
+          }
+        }
+      }
+    })
+  }
+
   /** Start a worker conversation and hand it the task assignment. */
-  async dispatchTask({ parentId, title, prompt, workspace, newWorkspace, theme, justification }) {
+  async dispatchTask({ parentId, title, prompt, workspace, newWorkspace, theme, justification, provider, model, reasoningEffort }) {
     const parent = this.requireSuper(parentId)
     const taskTitle = requireString(title, 'title')
     const assignment = requireString(prompt, 'prompt')
+    const route = this.dispatchRoute({ parentId: parent.id, provider, model, reasoningEffort })
+    await this.preflightDispatchRoute(route)
     const themeId = typeof theme === 'string' && theme.trim().length > 0 ? normalizeThemeId(theme) : ''
     const themeRecord = themeId ? this.store.theme(themeId) : undefined
     const knownWorkspaceIds = new Set(this.ctx.workspaceRegistry.list().map((workspace) => workspace.id))
@@ -1216,10 +1396,28 @@ export class Orchestrator {
       tags: [],
       turnReportedDone: false,
       progress: [],
+      ...(route.provider === undefined
+        ? {}
+        : {
+            model: {
+              provider: route.provider,
+              model: route.model,
+              ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
+              source: route.source,
+              applied: false,
+            },
+          }),
     }
     await this.store.update((state) => { state.conversations[id] = record })
     try {
       const agent = await this.ensureAgent(record)
+      const appliedModel = await this.applyDispatchRoute(agent, route)
+      if (appliedModel !== undefined) {
+        await this.store.update((state) => {
+          const stored = state.conversations[id]
+          if (stored) stored.model = { ...appliedModel, source: route.source, applied: true }
+        })
+      }
       await this.sendToAgent(agent, this.assignmentText(parent, record, assignment), { form: 'relay' })
       await this.store.update((state) => {
         const stored = state.conversations[id]
@@ -1731,7 +1929,7 @@ export class Orchestrator {
     const orchestrator = this
     return [
       tool('superagent_dispatch_task',
-        'Start a new persistent worker conversation and give it a complete task brief. Use this for substantial or long-running work. Returns the worker id, workspace, and status.',
+        'Start a new persistent worker conversation and give it a complete task brief. Use this for substantial or long-running work. The worker runs on your own provider and model unless provider/model name another registered route. Returns the worker id, workspace, model, and status.',
         DISPATCH_SCHEMA,
         async (args) => orchestrator.dispatchTask({
           parentId: conversationId,
@@ -1741,6 +1939,9 @@ export class Orchestrator {
           newWorkspace: args.new_workspace,
           theme: args.theme,
           justification: args.justification,
+          provider: args.provider,
+          model: args.model,
+          reasoningEffort: args.reasoning_effort,
         })),
       tool('superagent_list_workers',
         'List worker conversations with their live status, workspace, and latest result.',

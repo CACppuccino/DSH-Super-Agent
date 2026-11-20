@@ -56,7 +56,31 @@ export class FakeAgent {
     this.session = {
       id,
       snapshotEvents: () => agent.events,
+      requestHeader: () => agent.header,
     }
+    // Mirrors the Host Agent model controller the orchestrator prefers: one
+    // durable selection per Agent, no settings write.
+    if (host?.agentModelController !== false) {
+      this.model = {
+        current: () => agent.modelSelection,
+        select(selection) {
+          agent.modelSelection = { ...selection }
+          host.modelSelections.push({ sessionId: id, ...selection, appliedBy: 'agent' })
+        },
+      }
+    }
+  }
+
+  /** Pretend this conversation already sent one request on an exact route. */
+  useRoute(provider, model, reasoningEffort) {
+    this.header = {
+      config: {
+        provider,
+        model,
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      },
+    }
+    return this
   }
 
   /** Simulate a registry change that makes a tool restrictable and optionally visible. */
@@ -96,6 +120,15 @@ export class FakeHost {
     this.logs = []
     this.renameCalls = []
     this.createdSessions = []
+    // Host services the orchestrator reaches through ctx.get(name).
+    this.services = new Map()
+    // Worker-model bookkeeping used by the model tests.
+    this.modelSelections = []
+    this.savedSelections = []
+    this.llmErrors = new Map()
+    this.defaultSelection = undefined
+    // Set false to simulate a Host whose Agents expose no model controller.
+    this.agentModelController = true
     // Names the fake agent preset contributes to every new agent scope.
     this.presetTools = new Set()
     const host = this
@@ -136,6 +169,18 @@ export class FakeHost {
         host.renameCalls.push({ sessionId, title })
         return { title, seq: 1 }
       },
+      // Mirrors the Host: selecting a model for a Session also saves it as the
+      // default model, which is exactly the side effect dispatch must undo.
+      async selectModel({ sessionId, provider, model, reasoningEffort }) {
+        const selection = {
+          provider,
+          model,
+          ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+        }
+        host.modelSelections.push({ sessionId, ...selection, appliedBy: 'sessionController' })
+        host.defaultSelection = { ...selection }
+        return { selected: { ...selection } }
+      },
       async prompt(request) {
         host.prompts.push(request)
         return { accepted: true }
@@ -147,7 +192,38 @@ export class FakeHost {
     }
   }
 
+  /** Register one Host service the orchestrator looks up through ctx.get(). */
+  provideService(name, service) {
+    this.services.set(name, service)
+    return service
+  }
+
+  /**
+   * Mount the two Host services a worker-model dispatch uses: the LLM registry
+   * that validates an explicit route, and the default-model settings owner.
+   */
+  enableModels({ defaultSelection = { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'max' } } = {}) {
+    const host = this
+    this.defaultSelection = { ...defaultSelection }
+    this.provideService('llm', {
+      async resolveCallConfig(request) {
+        const failure = host.llmErrors.get(`${request.provider}/${request.model}`)
+        if (failure !== undefined) throw new Error(failure)
+        return { ...request }
+      },
+    })
+    this.provideService('agentDefaultModel', {
+      currentSelection: () => ({ ...host.defaultSelection }),
+      async saveSelection(selection) {
+        host.savedSelections.push({ ...selection })
+        host.defaultSelection = { ...selection }
+      },
+    })
+    return this
+  }
+
   get(id) {
+    if (this.services.has(id)) return this.services.get(id)
     return this.agents.get(id)
   }
 }
