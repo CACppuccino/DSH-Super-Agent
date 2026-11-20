@@ -259,9 +259,9 @@ test('compat falls back to events() for backwards history pages', async () => {
 
 test('the inject map never waits for the desktop account service', () => {
   // Every key in `inject` is a required dependency, even with
-  // `{ required: false }`; the retired `accountController` key is what left
-  // dsh-remote pending on DSH 0.2.2-rc.3. The account service must stay out of
-  // this map and be resolved on demand instead.
+  // `{ required: false }`; a missing injected service would leave dsh-remote
+  // pending. The account service must stay out of this map and be resolved on
+  // demand instead.
   assert.equal('accountController' in inject, false)
   assert.equal('deepseekAccount' in inject, false)
 })
@@ -299,7 +299,7 @@ test('compat exposes the host account balance through the rc.3 service', async (
     assert.deepEqual(balance.bonusWallets, [{ currency: 'CNY', balance: '10.00' }])
     assert.deepEqual(calls, [{ version: 'test', locale: 'zh-Hans-CN', timezoneOffsetSeconds: 28800 }])
     assert.equal(typeof balance.fetchedAt, 'number')
-    // The rc.3 service name is asked first; the retired name is a fallback.
+    // The rc.3 service is looked up on demand; the retired name is gone.
     assert.deepEqual(lookups.slice(0, 2), ['deepseekAccount'])
 
     outcome = null
@@ -311,15 +311,6 @@ test('compat exposes the host account balance through the rc.3 service', async (
     outcome = { status: 'failed' }
     const failed = await compat.rpc('host.balance', {}, signal)
     assert.equal(failed.status, 'failed')
-
-    // An older 0.2.1 Host still reaches its service through the same
-    // on-demand lookup, which keeps the endpoint loadable without an
-    // injected dependency.
-    outcome = { status: 'ready', value: [{ currency: 'CNY', balance: '1.00' }], bonusWallets: [] }
-    ctx.get = (name) => name === 'accountController' ? account : undefined
-    const legacy = await compat.rpc('host.balance', {}, signal)
-    assert.equal(legacy.status, 'ready')
-    assert.deepEqual(legacy.wallets, [{ currency: 'CNY', balance: '1.00' }])
   } finally {
     compat.dispose()
   }

@@ -166,25 +166,7 @@ test('signed-out, unavailable, and failed balance states never become zero', asy
   assert.equal((await failed.summary({})).balance.status, 'failed')
 })
 
-test('the retired accountController service is still honored', async () => {
-  const billing = createBilling({
-    ctx: {
-      get: (name) => name === 'accountController'
-        ? {
-            async getBalance() {
-              return { status: 'ready', value: [{ currency: 'CNY', balance: '2.00' }], bonusWallets: [] }
-            },
-          }
-        : undefined,
-    },
-    now: () => 1,
-  })
-  const summary = await billing.summary({ locale: 'zh-CN', timezoneOffsetSeconds: 28_800 })
-  assert.equal(summary.balance.status, 'ready')
-  assert.deepEqual(summary.balance.wallets, [{ currency: 'CNY', balance: '2.00' }])
-})
-
-test('the rc.3 deepseekAccount service takes precedence over the retired accountController', async () => {
+test('the rc.3 deepseekAccount service is read on demand', async () => {
   const calls = []
   const billing = createBilling({
     ctx: {
@@ -194,14 +176,6 @@ test('the rc.3 deepseekAccount service takes precedence over the retired account
             async getBalance() {
               calls.push('deepseekAccount')
               return { status: 'ready', value: [{ currency: 'CNY', balance: '3.00' }], bonusWallets: [] }
-            },
-          }
-        }
-        if (name === 'accountController') {
-          return {
-            async getBalance() {
-              calls.push('accountController')
-              return { status: 'ready', value: [{ currency: 'USD', balance: '9.99' }], bonusWallets: [] }
             },
           }
         }

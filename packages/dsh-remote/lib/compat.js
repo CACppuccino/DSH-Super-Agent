@@ -267,15 +267,14 @@ export function createCompat(ctx, { logger = console, version = '0.0.0' } = {}) 
    * `deepseekAccount` (Remote namespace `account`). Its `getBalance(client)`
    * keeps the `{ version, locale, timezoneOffsetSeconds }` input and returns
    * `null`, `{ status: 'failed' }`, or
-   * `{ status: 'ready', value, bonusWallets }`. The retired name remains a
-   * best-effort fallback for older Hosts.
+   * `{ status: 'ready', value, bonusWallets }`.
    */
   const accountService = () => {
     if (typeof ctx.get !== 'function') return undefined
     try {
       // `ctx.get` reports an absent service as undefined instead of throwing,
       // and works without an injection requirement on this plugin.
-      return ctx.get('deepseekAccount') ?? ctx.get('accountController') ?? undefined
+      return ctx.get('deepseekAccount')
     } catch {
       // A throwing lookup must not take the endpoint down.
       return undefined

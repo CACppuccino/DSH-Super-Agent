@@ -4,11 +4,9 @@
  *
  * Three independent facts are exposed:
  *
- * 1. Balance comes from the desktop account service — `deepseekAccount` on
- *    DSH 0.2.2 and later, the retired `accountController` before it. Both
- *    expose the same `getBalance({ version, locale, timezoneOffsetSeconds })`
- *    contract and return the DeepSeek Platform wallet for the signed-in
- *    account, never a token.
+ * 1. Balance comes from the desktop account service `deepseekAccount`, whose
+ *    `getBalance({ version, locale, timezoneOffsetSeconds })` contract returns
+ *    the DeepSeek Platform wallet for the signed-in account, never a token.
  * 2. Per-key spend comes from the Platform usage page's private
  *    `/api/v0/usage/by_api_key/cost` endpoint, authenticated with the account
  *    grant already stored for balance. The endpoint buckets by calendar day,
@@ -262,11 +260,11 @@ export function createBilling(options = {}) {
   async function readBalance(client) {
     let account
     try {
-      // DSH 0.2.2 removed `dsh-api-account-controller`; `deepseekAccount` is
-      // its replacement and keeps the same getBalance contract. Both are read
-      // through ctx.get so a host with neither degrades to "unavailable".
+      // DSH 0.2.2 replaced `dsh-api-account-controller` with
+      // `deepseekAccount`, which keeps the same getBalance contract. It is
+      // read through ctx.get so a host without it degrades to "unavailable".
       account = ctx && typeof ctx.get === 'function'
-        ? ctx.get('deepseekAccount') ?? ctx.get('accountController')
+        ? ctx.get('deepseekAccount')
         : undefined
     } catch {
       account = undefined

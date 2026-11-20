@@ -145,7 +145,7 @@ The suite covers the state store (including tag normalization and persistence, t
 
 Super Agent 面板标题栏右侧有一个紧凑状态组件。它显示的是**两个不同窗口的数**，不能相加或互相换算：
 
-- **余额**：显示当前登录 DeepSeek 账户的钱包余额（CNY/USD，带币种符号）。数据来自宿主可选的账户服务 `deepseekAccount.getBalance({version, locale, timezoneOffsetSeconds})`（DSH 0.2.2 起；旧版的 `accountController` 同名同语义，仍作为后备读取），与 `dsh-remote` 的 `host.balance` 同源；未登录、读取失败，或当前 profile 没有该服务时显示 `—`，不会显示 0。
+- **余额**：显示当前登录 DeepSeek 账户的钱包余额（CNY/USD，带币种符号）。数据来自宿主可选的账户服务 `deepseekAccount.getBalance({version, locale, timezoneOffsetSeconds})`（DSH 0.2.2 起），与 `dsh-remote` 的 `host.balance` 同源；未登录、读取失败，或当前 profile 没有该服务时显示 `—`，不会显示 0。
 - **今日（Platform 日，含时区）**：每个 API key 的消费，来自 DeepSeek Platform 用量页使用的私有接口 `GET https://platform.deepseek.com/api/v0/usage/by_api_key/cost?start=<unix>&end=<unix>&tz=<offset>`，使用账户登录后已经保存在凭据存储里的 grant（`x-dsh-auth-token`），不新增任何登录或浏览器认证面。接口按 `86400` 秒的日历日分桶，因此金额是**今日**（按界面时区），不是滚动 24 小时。
 - **滚动 24h（本地计算）**：同一列表下方按 **provider 路由**（`deepseek-official` = API key 路由，`deepseek-account` = 账户路由）汇总最近 24 小时本地 Session 日志中 `assistant/message.data.usage` 的 provider 上报 token（输入、输出、缓存读/写、请求数）。这是精确的滚动 24 小时 token 数，完全在本地计算。
 - 列表中的 API key 直接来自 Platform 响应的 `api_key` 系列，支持 0/1/N 个 key（当前账户实测返回 AutoQuant / DeepSeek Harness / MacClaudeCode），不依赖 `~/.dsh/.credentials.yaml` 里是否有 key 记录。为了列出“今日 0 消费但最近仍活跃”的 key，金额请求使用“昨天 + 今天”的 key 枚举窗口，只累加今天的桶；因此 Harness 今日 `¥0.00` 也会显示。只保留 `api_key.name`（或派生的 `key-<hash6>` 短标签）、12 位哈希 id、类型、模型和金额；`sensitive_id` 与 `tracking_id` 在解析边界丢弃，不写入缓存、日志、API 响应或错误。
