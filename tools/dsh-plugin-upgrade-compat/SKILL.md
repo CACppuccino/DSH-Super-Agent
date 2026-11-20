@@ -96,6 +96,9 @@ matching rule is reported as `NEEDS_MANUAL`; the adapter never invents an API.
   restart and let the user decide.
 - Treat `DEGRADED` event/slot findings as review items, not proof of breakage:
   the event may be emitted by another plugin in the same profile.
+- A source sample that is not an installable plugin declares
+  `.dsh-compat-ignore` at its root; the scan reports it as a skipped
+  non-installable example instead of grading it `BROKEN`.
 - If a source guide is missing from the installed core, the rule is stale: fix
   `rules.json`, do not apply it.
 - Keep `baseline/latest.json` under version control. `--write-baseline` records

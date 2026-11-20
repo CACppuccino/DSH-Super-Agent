@@ -55,6 +55,11 @@ Core packages (`@deepseek-ai/dsh-*` present in the installation) are filtered
 out. `config.json` holds the roots, exclusions, and check timeouts; edit it for
 another machine instead of changing code.
 
+A source sample that is not an installable plugin (no built entry, or workspace
+dev dependencies that only resolve inside a DSH checkout) can opt out with a
+`.dsh-compat-ignore` file at its root. The scan reports it under `Discovery` as
+a skipped non-installable example instead of grading it `BROKEN`.
+
 ## What is checked
 
 `scripts/lib/core-surface.mjs` builds a read-only surface from the installation:

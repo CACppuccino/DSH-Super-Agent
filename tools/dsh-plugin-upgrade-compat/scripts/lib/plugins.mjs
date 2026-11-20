@@ -41,6 +41,13 @@ export function discoverPlugins({ config, corePackages, dshHome }) {
       skipped.push({ path: root, reason: `unreadable package.json: ${String(error).slice(0, 160)}` })
       return
     }
+    // Source samples living next to real plugins are not installable DSH
+    // packages: some have no built entry or target the checkout they were
+    // copied from. They opt out explicitly instead of being graded BROKEN.
+    if (existsSync(join(root, '.dsh-compat-ignore'))) {
+      skipped.push({ path: root, reason: 'non-installable source example (.dsh-compat-ignore)' })
+      return
+    }
     if (typeof manifest.name !== 'string') return
     if (corePackages[manifest.name] !== undefined) return
     if (!isPluginManifest(manifest)) return

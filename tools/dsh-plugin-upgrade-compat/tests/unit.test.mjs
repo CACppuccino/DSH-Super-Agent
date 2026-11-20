@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { analyzePlugin, scanSpecifiers } from '../scripts/lib/analyze.mjs'
+import { discoverPlugins } from '../scripts/lib/plugins.mjs'
 import { applyRule, matchRule } from '../scripts/lib/rules.mjs'
 import { parseModuleExports } from '../scripts/lib/core-surface.mjs'
 import { resolveExportsTarget, stableJson } from '../scripts/lib/runtime.mjs'
@@ -286,4 +287,26 @@ test('analysis output is deterministic', () => {
   const first = stableJson(analyzeFixture(root))
   const second = stableJson(analyzeFixture(root))
   assert.equal(first, second)
+})
+
+test('discovery skips a source example marked with .dsh-compat-ignore', () => {
+  const root = writePlugin({
+    'package.json': JSON.stringify({ name: 'dsh-example', version: '0.0.1', exports: { '.': './index.js' } }, null, 2),
+    'index.js': 'export const name = "dsh-example"\n',
+  })
+  const dshHome = tempDir('compat-home')
+  const config = {
+    discovery: {
+      profilesRoot: join(dshHome, 'profiles'),
+      sourceRoots: [{ path: root, depth: 0, role: 'workspace' }],
+    },
+  }
+  const before = discoverPlugins({ config, corePackages: {}, dshHome })
+  assert.equal(before.plugins.length, 1)
+  assert.equal(before.plugins[0].name, 'dsh-example')
+
+  writeFileSync(join(root, '.dsh-compat-ignore'), 'non-installable sample\n')
+  const after = discoverPlugins({ config, corePackages: {}, dshHome })
+  assert.equal(after.plugins.length, 0)
+  assert.ok(after.skipped.some((entry) => entry.reason === 'non-installable source example (.dsh-compat-ignore)'))
 })
