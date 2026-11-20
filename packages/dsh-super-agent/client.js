@@ -29,6 +29,63 @@ window.__ModuleLoader__.load({
     const PENDING_ANSWER_DISMISS_MS = 1800
     const SURFACE_STOCK = 'stock'
     const SURFACE_CUSTOM = 'custom'
+    // The conversation this panel is currently showing; used by the sidebarRight
+    // fallback below when a link click needs a session to mount a surface for.
+    let activeSessionId = undefined
+    // Workspace → Session map learned from the conversation catalog. A file
+    // mention in this panel names its absolute path; the address built by the
+    // framework carries the *viewing* conversation's session, which may be the
+    // Super Agent (super) session rather than the worker session whose
+    // workspace actually contains the file. Rewriting the address to the
+    // owning workspace's session keeps the built-in previewer inside that
+    // session's workspace instead of refusing with `outside-workspace`.
+    let knownWorkspaces = []
+
+    /** The workspace entry (session + root) that owns an absolute path, if any. */
+    function ownerWorkspaceOfPath(path) {
+      const value = String(path || '').replace(/\/+$/, '')
+      if (!value.startsWith('/')) return undefined
+      let best
+      for (const entry of knownWorkspaces) {
+        if (value === entry.workspacePath || value.startsWith(entry.workspacePath + '/')) {
+          if (best === undefined || entry.workspacePath.length > best.workspacePath.length) best = entry
+        }
+      }
+      return best
+    }
+
+    /** Lazy handle on the md-editor plugin's pure Markdown renderer (HTML output). */
+    let markdownRenderer
+    let markdownRendererLooked = false
+    function markdownRendererOf(requireFn) {
+      if (!markdownRendererLooked) {
+        markdownRendererLooked = true
+        try {
+          const mod = requireFn ? requireFn('@local/dsh-md-editor') : undefined
+          const internals = mod && (mod.__internals || mod.default && mod.default.__internals)
+          if (internals && typeof internals.renderMarkdown === 'function') markdownRenderer = internals
+        } catch { markdownRenderer = undefined }
+      }
+      return markdownRenderer
+    }
+
+    /** Join a document's directory with a relative image path. */
+    function absoluteImagePath(documentPath, src) {
+      const value = String(src || '')
+      if (value.startsWith('/')) return value
+      const document = String(documentPath || '')
+      const at = document.lastIndexOf('/')
+      if (at === -1) return value
+      return `${document.slice(0, at)}/${value}`
+    }
+
+    /** Build a `dsh-resource://file/session/<id>/<path>` address for an absolute path. */
+    function fileAddressForPath(sessionId, path) {
+      const encodeSegment = (segment) => encodeURIComponent(segment).replace(/%3A/gi, ':')
+      const normalized = String(path || '').replace(/\\/g, '/')
+      const encodedPath = normalized.split('/').map(encodeSegment).join('/')
+      return `dsh-resource://file/session/${encodeSegment(sessionId)}/${encodedPath}`
+    }
 
     /** Locale dictionaries; every visible string lives here. */
     const DICT = {
@@ -80,6 +137,20 @@ window.__ModuleLoader__.load({
         loadFailed: '无法连接 Super Agent 插件。',
         retry: '重试',
         openInDsh: '在 DSH 中打开',
+        previewUnsupported: '该类型不支持在面板内预览，可切换到侧栏打开。',
+        openInSidebar: '在侧栏打开',
+        saveIdle: '已同步',
+        saveSaving: '保存中…',
+        saveSaved: '已保存',
+        saveConflict: '文件已被外部修改（本地内容已保留）',
+        saveFailed: '保存失败：{error}',
+        previewLoadFailed: '无法加载预览：{error}',
+        overwriteSave: '覆盖保存',
+        sheetTruncated: '仅显示前 200 行 / 30 列；可在侧栏查看完整内容。',
+        sheetTooLarge: '表格文件过大（>20MB），请在侧栏打开。',
+        previewFullscreen: '全屏预览',
+        previewRestore: '退出全屏',
+        showHistoryShort: '历史',
         openFull: '打开完整对话',
         backToSuper: '返回 Super Agent',
         workerBanner: '这是一个由 Super Agent 创建的 worker 对话。你可以查看完整过程；后续指令由 Super Agent 发送。',
@@ -225,6 +296,20 @@ window.__ModuleLoader__.load({
         loadFailed: 'Could not reach the Super Agent plugin.',
         retry: 'Retry',
         openInDsh: 'Open in DSH',
+        previewUnsupported: 'This file type cannot be previewed in the panel; open it in the sidebar.',
+        openInSidebar: 'Open in sidebar',
+        saveIdle: 'Synced',
+        saveSaving: 'Saving…',
+        saveSaved: 'Saved',
+        saveConflict: 'File changed externally (local content kept)',
+        saveFailed: 'Save failed: {error}',
+        previewLoadFailed: 'Could not load preview: {error}',
+        overwriteSave: 'Overwrite',
+        sheetTruncated: 'Showing the first 200 rows / 30 columns; open in the sidebar for the full file.',
+        sheetTooLarge: 'Spreadsheet is too large (>20MB); open it in the sidebar.',
+        previewFullscreen: 'Fullscreen preview',
+        previewRestore: 'Exit fullscreen',
+        showHistoryShort: 'History',
         openFull: 'Open full conversation',
         backToSuper: 'Back to Super Agent',
         workerBanner: 'This worker conversation was created by the Super Agent. You can inspect the full run; follow-up instructions are sent by the Super Agent.',
@@ -405,6 +490,69 @@ window.__ModuleLoader__.load({
 .sa-icon-button:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
 .sa-body { display: flex; flex: 1 1 auto; min-height: 0; }
 .sa-main { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
+.sa-preview { display: flex; flex-direction: column; width: min(46%, 620px); min-width: 340px; min-height: 0;
+  border-left: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); }
+.sa-preview-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; flex: 0 0 auto;
+  border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.sa-preview-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sa-preview-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 10px 14px; }
+.sa-preview-body iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+.sa-preview-toolbar { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding: 5px 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.sa-save-state { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sa-save-state[data-kind="saved"] { color: var(--dsw-alias-label-secondary); }
+.sa-save-state[data-kind="saving"] { color: var(--dsw-alias-label-secondary); }
+.sa-save-state[data-kind="error"], .sa-save-state[data-kind="conflict"] { color: var(--dsw-alias-label-error, #d9534f); }
+.sa-preview-split { display: flex; flex: 1 1 auto; min-height: 0; }
+.sa-preview-source { flex: 1 1 50%; min-width: 0; min-height: 0; resize: none; border: 0; outline: none;
+  border-right: 1px solid var(--dsw-alias-border-l1); padding: 10px 12px; background: transparent; color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55;
+  overflow: auto; tab-size: 2; }
+.sa-preview-render { flex: 1 1 50%; min-width: 0; min-height: 0; overflow: auto; padding: 10px 14px; }
+.sa-preview-render .sa-preview-md { padding: 0; }
+.sa-preview-md { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.sa-preview-md h1, .sa-preview-md h2, .sa-preview-md h3, .sa-preview-md h4, .sa-preview-md h5, .sa-preview-md h6
+  { margin: 1.1em 0 .5em; line-height: 1.3; font-weight: 600; }
+.sa-preview-md h1 { font-size: 1.55em; } .sa-preview-md h2 { font-size: 1.32em; }
+.sa-preview-md h3 { font-size: 1.16em; } .sa-preview-md h4 { font-size: 1.05em; }
+.sa-preview-md p { margin: .6em 0; line-height: 1.65; }
+.sa-preview-md ul, .sa-preview-md ol { margin: .5em 0; padding-left: 1.6em; }
+.sa-preview-md li { margin: .2em 0; line-height: 1.6; }
+.sa-preview-md blockquote { margin: .7em 0; padding: .15em 0 .15em .9em;
+  border-left: 3px solid var(--dsw-alias-border-l3); color: var(--dsw-alias-label-secondary); }
+.sa-preview-md hr { margin: 1.1em 0; border: 0; border-top: 1px solid var(--dsw-alias-border-l1); }
+.sa-preview-md a { color: var(--dsw-alias-brand-primary); text-decoration: underline; }
+.sa-preview-md code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em;
+  padding: .1em .35em; border-radius: 4px; background: var(--dsw-alias-bg-layer-2); }
+.sa-preview-md pre { margin: .8em 0; padding: 10px 12px; overflow: auto; border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2); font-size: 12px; line-height: 1.55; }
+.sa-preview-md pre code { padding: 0; background: transparent; }
+.sa-preview-md table { border-collapse: collapse; margin: .8em 0; font-size: 12.5px; }
+.sa-preview-md th, .sa-preview-md td { border: 1px solid var(--dsw-alias-border-l2); padding: 4px 8px; text-align: left; }
+.sa-preview-md th { background: var(--dsw-alias-bg-layer-2); font-weight: 600; }
+.sa-preview-md img { max-width: 100%; }
+.sa-preview[data-fullscreen="true"] { position: absolute; inset: 0; width: auto; min-width: 0; z-index: 30;
+  border-left: 0; background: var(--dsw-alias-bg-layer-1); }
+.sa-rail-restore { position: absolute; right: 8px; top: 76px; z-index: 12; width: 26px; height: 64px;
+  display: inline-grid; place-items: center; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary); font-size: 12px; writing-mode: vertical-rl; letter-spacing: .1em; }
+.sa-rail-restore:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.sa-preview-note { padding: 12px 4px; font-size: 13px; color: var(--dsw-alias-label-secondary); }
+.sa-preview-note strong { color: var(--dsw-alias-label-primary); }
+.sa-preview-sheet { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.sa-sheet-tabs { display: flex; gap: 4px; flex: 0 0 auto; padding: 4px 8px; overflow-x: auto;
+  border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.sa-sheet-tab { appearance: none; border: 1px solid transparent; background: transparent; color: inherit;
+  border-radius: 6px; padding: 2px 9px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.sa-sheet-tab:hover { background: var(--dsw-alias-bg-layer-2); }
+.sa-sheet-tab[data-active="true"] { border-color: var(--dsw-alias-brand-primary); background: var(--dsw-alias-bg-layer-2); }
+.sa-sheet-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.sa-sheet-scroll table { border-collapse: collapse; font-size: 12px; min-width: 100%; }
+.sa-sheet-scroll th, .sa-sheet-scroll td { border: 1px solid var(--dsw-alias-border-l2); padding: 2px 6px;
+  white-space: pre; max-width: 320px; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.sa-sheet-scroll th { position: sticky; top: 0; background: var(--dsw-alias-bg-layer-2); font-weight: 600; z-index: 1; }
+.sa-sheet-note { padding: 4px 10px; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .sa-chat { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 22px 26px 10px; }
 .sa-stock { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .sa-stock-progress { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding: 7px 18px;
@@ -2351,6 +2499,44 @@ window.__ModuleLoader__.load({
     }
 
     /** The whole panel. */
+    /** Lazy SheetJS loader (vendored asset served by the md-editor host route). */
+    let sheetLibPromise
+    function loadSheetLib() {
+      if (globalThis.XLSX) return Promise.resolve(globalThis.XLSX)
+      if (sheetLibPromise !== undefined) return sheetLibPromise
+      sheetLibPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = '/api/md-editor/assets/xlsx.full.min.js'
+        script.async = true
+        script.onload = () => (globalThis.XLSX ? resolve(globalThis.XLSX) : reject(new Error('XLSX global unavailable')))
+        script.onerror = () => reject(new Error('xlsx asset failed to load'))
+        document.head.appendChild(script)
+      }).catch((error) => { sheetLibPromise = undefined; throw error })
+      return sheetLibPromise
+    }
+
+    /** Read-only spreadsheet view: sheet tabs plus the first rows/columns of the sheet. */
+    function SheetView({ t, sheet, active, onSelect, onOpenSidebar, path }) {
+      const current = sheet.sheets[active] || sheet.sheets[0]
+      if (!current) return h('div', { className: 'sa-preview-note' }, t('loadFailed', { error: 'empty workbook' }))
+      return h('div', { className: 'sa-preview-sheet' },
+        h('div', { className: 'sa-sheet-tabs' },
+          sheet.sheets.map((item, index) => h('button', {
+            key: item.name, type: 'button', className: 'sa-sheet-tab',
+            'data-active': index === active ? 'true' : 'false',
+            onClick: () => onSelect(index),
+          }, item.name))),
+        h('div', { className: 'sa-sheet-scroll' },
+          h('table', null,
+            h('tbody', null, current.rows.map((row, rowIndex) => h('tr', { key: rowIndex },
+              row.map((cell, columnIndex) => (rowIndex === 0
+                ? h('th', { key: columnIndex, title: cell }, cell)
+                : h('td', { key: columnIndex, title: cell }, cell)))))))),
+        current.truncated && h('div', { className: 'sa-sheet-note' }, t('sheetTruncated')),
+        h('div', { className: 'sa-sheet-note' },
+          h('button', { type: 'button', className: 'sa-button', onClick: () => onOpenSidebar(path) }, t('openInSidebar'))))
+    }
+
     function App({ ctx, t, stockChat, renderSlot, SessionProvider }) {
       const catalog = useCatalog()
       const usage = useUsage(ctx)
@@ -2371,11 +2557,256 @@ window.__ModuleLoader__.load({
       const [tagFilter, setTagFilter] = React.useState(() => readTagFilter(window.localStorage))
       const [newOpen, setNewOpen] = React.useState(false)
       const [notice, setNotice] = React.useState('')
+      const [preview, setPreview] = React.useState(undefined)
+      const [previewFull, setPreviewFull] = React.useState(false)
+      const [sheet, setSheet] = React.useState(undefined)
+      const [sheetActive, setSheetActive] = React.useState(0)
+      const [draft, setDraft] = React.useState('')
+      const [savedText, setSavedText] = React.useState('')
+      const [saveState, setSaveState] = React.useState({ kind: 'idle' })
+      const draftRef = React.useRef('')
+      const savedRef = React.useRef('')
+      const versionRef = React.useRef(undefined)
+      const saveTimerRef = React.useRef(0)
+      const previewRef = React.useRef(undefined)
+      const previewRenderRef = React.useRef(null)
+      previewRef.current = preview
+      draftRef.current = draft
+      savedRef.current = savedText
       const data = catalog.data
       const conversations = data ? data.conversations : []
       const pending = data && Array.isArray(data.pending) ? data.pending : []
       const selected = conversations.find((item) => item.id === selectedId) || null
       const chat = useSessionChat(ctx, selected ? selected.sessionId : undefined)
+      // Feed the sidebarRight fallback: this panel's conversation is the session
+      // a link click should mount a surface for.
+      const selectedSessionId = selected ? selected.sessionId : undefined
+      React.useEffect(() => {
+        activeSessionId = selectedSessionId
+        return () => { if (activeSessionId === selectedSessionId) activeSessionId = undefined }
+      }, [selectedSessionId])
+      // Record every conversation's workspace so a file mention can be routed
+      // to the session whose workspace actually owns that absolute path.
+      React.useEffect(() => {
+        knownWorkspaces = conversations
+          .filter((item) => item && typeof item.workspacePath === 'string' && item.workspacePath.length > 0 && item.sessionId)
+          .map((item) => ({ sessionId: item.sessionId, workspacePath: item.workspacePath.replace(/\/+$/, '') }))
+      }, [conversations])
+      // ---- in-panel preview -------------------------------------------------
+      // The built-in right Sidebar only renders beside the default conversation
+      // view (with a global panel owning the main column its column is width 0
+      // and its session views are display:none), so links clicked here open a
+      // panel-local preview instead of switching the main column away.
+      const closePreview = () => { setPreview(undefined); setPreviewFull(false) }
+      React.useEffect(() => {
+        if (!previewFull) return undefined
+        const onKey = (event) => { if (event.key === 'Escape') setPreviewFull(false) }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+      }, [previewFull])
+      const showFilePreview = (path) => {
+        const owner = ownerWorkspaceOfPath(path)
+        const sessionId = owner ? owner.sessionId : (activeSessionId || (selected ? selected.sessionId : undefined))
+        if (/\.(xlsx|xls|csv)$/i.test(path)) {
+          void loadSheet(path, sessionId)
+          return
+        }
+        if (!/\.(md|markdown)$/i.test(path)) {
+          // Only Markdown has an in-panel renderer; other types keep the
+          // built-in sidebar previewer (which needs the conversation view).
+          setPreview({ kind: 'file', path, status: 'unsupported' })
+          return
+        }
+        setPreview({ kind: 'file', path, status: 'loading' })
+        if (!sessionId) { setPreview({ kind: 'file', path, status: 'error', error: 'no session' }); return }
+        fetch('/api/md-editor/load', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId, path }),
+        }).then(async (response) => {
+          const body = await response.json().catch(() => undefined)
+          if (!response.ok) throw new Error((body && (body.error || body.code)) || ('HTTP ' + response.status))
+          versionRef.current = body.version
+          savedRef.current = body.content
+          setSavedText(body.content)
+          setDraft(body.content)
+          setSaveState({ kind: 'idle' })
+          setPreview({ kind: 'file', path, status: 'ready', content: body.content })
+        }).catch((error) => {
+          setPreview({ kind: 'file', path, status: 'error', error: String(error && error.message ? error.message : error) })
+        })
+      }
+      const escapePreview = (text) => String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      const markdownHtmlOf = (path, content) => {
+        const renderer = markdownRendererOf(typeof require === 'function' ? require : undefined)
+        if (!renderer) {
+          console.warn('[dsh-super-agent] md-editor renderer unavailable; falling back to plain text')
+          return escapePreview(content)
+        }
+        try {
+          return renderer.renderMarkdown(String(content || ''), {
+            resolveImage: (src) => (/^(?:https?:|data:|blob:|dsh-resource:)/i.test(src)
+              ? src
+              : '/api/file?path=' + encodeURIComponent(absoluteImagePath(path, src))),
+          }).html
+        } catch (error) {
+          console.warn('[dsh-super-agent] markdown render failed', error)
+          return escapePreview(content)
+        }
+      }
+      const saveStateLabel = (state) => {
+        if (state.kind === 'saving') return t('saveSaving')
+        if (state.kind === 'saved') return t('saveSaved')
+        if (state.kind === 'conflict') return t('saveConflict')
+        if (state.kind === 'error') return t('saveFailed', { error: state.message })
+        return t('saveIdle')
+      }
+      const saveDraft = React.useCallback(async (content, options = {}) => {
+        const current = previewRef.current
+        if (!current || current.kind !== 'file') return
+        const owner = ownerWorkspaceOfPath(current.path)
+        const sessionId = owner ? owner.sessionId : activeSessionId
+        if (!sessionId) { setSaveState({ kind: 'error', message: 'no session' }); return }
+        setSaveState({ kind: 'saving' })
+        try {
+          const response = await fetch('/api/md-editor/save', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              sessionId,
+              path: current.path,
+              content,
+              baseVersion: options.force ? undefined : versionRef.current,
+            }),
+          })
+          const body = await response.json().catch(() => undefined)
+          if (!response.ok) {
+            const error = new Error((body && (body.error || body.code)) || ('HTTP ' + response.status))
+            error.code = body && body.code
+            throw error
+          }
+          versionRef.current = body.version
+          savedRef.current = content
+          setSavedText(content)
+          setSaveState({ kind: 'saved', at: body.savedAt || Date.now() })
+        } catch (error) {
+          if (error && error.code === 'stale') setSaveState({ kind: 'conflict' })
+          else setSaveState({ kind: 'error', message: String(error && error.message ? error.message : error) })
+        }
+      }, [])
+      React.useEffect(() => {
+        if (!preview || preview.kind !== 'file' || preview.status !== 'ready') return undefined
+        if (draft === savedText) return undefined
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = setTimeout(() => {
+          saveTimerRef.current = 0
+          if (draftRef.current !== savedRef.current) void saveDraft(draftRef.current)
+        }, 800)
+        return () => {
+          if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = 0 }
+        }
+      }, [draft, savedText, preview && preview.path, preview && preview.status, saveDraft])
+      React.useEffect(() => {
+        if (!preview || preview.kind !== 'file' || preview.status !== 'ready') return undefined
+        if (!/\.(md|markdown)$/i.test(preview.path)) return undefined
+        const timer = setTimeout(() => {
+          const node = previewRenderRef.current
+          const renderer = markdownRendererOf(typeof require === 'function' ? require : undefined)
+          if (node && renderer && typeof renderer.renderMermaid === 'function') {
+            void renderer.renderMermaid(node)
+          }
+        }, 350)
+        return () => clearTimeout(timer)
+      }, [draft, preview && preview.path, preview && preview.status, previewFull])
+      const loadSheet = async (path, sessionId) => {
+        setSheet(undefined)
+        setPreview({ kind: 'file', path, status: 'sheet-loading' })
+        if (!sessionId) { setPreview({ kind: 'file', path, status: 'sheet-error', error: 'no session' }); return }
+        try {
+          const query = `sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`
+          const response = await fetch('/api/md-editor/read-bytes?' + query, { credentials: 'same-origin' })
+          if (!response.ok) {
+            const body = await response.json().catch(() => undefined)
+            throw new Error((body && (body.error || body.code)) || ('HTTP ' + response.status))
+          }
+          const bytes = new Uint8Array(await response.arrayBuffer())
+          // Parsing happens on the main thread; a very large workbook would
+          // freeze the panel, so send those to the dedicated sidebar previewer.
+          if (bytes.byteLength > 20 * 1024 * 1024) {
+            throw new Error(t('sheetTooLarge'))
+          }
+          const XLSX = await loadSheetLib()
+          const workbook = XLSX.read(bytes, { type: 'array' })
+          const sheets = workbook.SheetNames.map((name) => {
+            const worksheet = workbook.Sheets[name]
+            const reference = (worksheet && worksheet['!ref']) || 'A1'
+            const range = XLSX.utils.decode_range(reference)
+            const maxRows = Math.min(range.e.r - range.s.r + 1, 200)
+            const maxCols = Math.min(range.e.c - range.s.c + 1, 30)
+            const rows = []
+            for (let rowIndex = 0; rowIndex < maxRows; rowIndex += 1) {
+              const row = []
+              for (let columnIndex = 0; columnIndex < maxCols; columnIndex += 1) {
+                const address = XLSX.utils.encode_cell({ r: range.s.r + rowIndex, c: range.s.c + columnIndex })
+                const cell = worksheet[address]
+                row.push(cell === undefined
+                  ? ''
+                  : (cell.w !== undefined ? String(cell.w) : (cell.v === undefined || cell.v === null ? '' : String(cell.v))))
+              }
+              rows.push(row)
+            }
+            return {
+              name,
+              rows,
+              truncated: (range.e.r - range.s.r + 1) > maxRows || (range.e.c - range.s.c + 1) > maxCols,
+            }
+          })
+          setSheet({ sheets })
+          setSheetActive(0)
+          setPreview({ kind: 'file', path, status: 'sheet-ready' })
+        } catch (error) {
+          setPreview({ kind: 'file', path, status: 'sheet-error', error: String(error && error.message ? error.message : error) })
+        }
+      }
+      const showUrlPreview = (href) => setPreview({ kind: 'url', href })
+      const openInSidebar = (path) => {
+        const owner = ownerWorkspaceOfPath(path)
+        const sessionId = owner ? owner.sessionId : activeSessionId
+        if (!sessionId) return
+        try { ctx.sidebarRight.openResource(fileAddressForPath(sessionId, path)) }
+        catch (error) { console.error('[dsh-super-agent] open in sidebar failed', error) }
+      }
+      React.useEffect(() => {
+        const node = rootRef.current
+        if (!node) return undefined
+        const onClick = (event) => {
+          const target = event.target
+          if (!target || typeof target.closest !== 'function') return
+          const mention = target.closest('button[class*="_fileMention_"]')
+          if (mention) {
+            const path = mention.getAttribute('title') || ''
+            if (path) {
+              event.preventDefault()
+              event.stopPropagation()
+              showFilePreview(path)
+              return
+            }
+          }
+          const anchor = target.closest('a[href^="http"]')
+          if (anchor) {
+            const href = anchor.getAttribute('href') || ''
+            if (href) {
+              event.preventDefault()
+              event.stopPropagation()
+              showUrlPreview(href)
+            }
+          }
+        }
+        node.addEventListener('click', onClick, true)
+        return () => node.removeEventListener('click', onClick, true)
+      }, [])
       const statusLabel = statusOf(selected ? selected.status : 'idle')
       const selectedWorkers = selected && selected.kind === 'super'
         ? conversations.filter((item) => item.kind === 'worker' && item.parentId === selected.id)
@@ -2576,6 +3007,54 @@ window.__ModuleLoader__.load({
                   h('button', { type: 'button', className: 'sa-button primary', onClick: () => { catalog.bootstrap().catch(() => {}) } }, t('retry')))
                 : center,
             h(TurnTagRail, { rootRef, turnTags, t })),
+          preview && h('section', { className: 'sa-preview', 'data-fullscreen': previewFull ? 'true' : 'false' },
+            h('div', { className: 'sa-preview-head' },
+              h('span', { className: 'sa-preview-title', title: preview.kind === 'file' ? preview.path : preview.href },
+                basename(preview.kind === 'file' ? preview.path : preview.href)),
+              h('button', {
+                type: 'button', className: 'sa-icon-button', title: previewFull ? t('previewRestore') : t('previewFullscreen'),
+                onClick: () => setPreviewFull((value) => !value),
+              }, previewFull ? '\u2715' : '\u26f6'),
+              h('button', { type: 'button', className: 'sa-icon-button', title: t('close'), onClick: closePreview }, '\u00d7')),
+            h('div', { className: 'sa-preview-body' },
+              preview.kind === 'url'
+                ? h('iframe', { src: preview.href, title: preview.href })
+                : preview.status === 'loading'
+                  ? h('div', { className: 'sa-preview-note' }, t('loading'))
+                  : preview.status === 'error'
+                    ? h('div', { className: 'sa-preview-note' }, t('previewLoadFailed', { error: preview.error }))
+                    : preview.status === 'sheet-loading'
+                      ? h('div', { className: 'sa-preview-note' }, t('loading'))
+                      : preview.status === 'sheet-error'
+                        ? h('div', { className: 'sa-preview-note' },
+                            t('previewLoadFailed', { error: preview.error }),
+                            h('div', { style: { marginTop: '8px' } },
+                              h('button', { type: 'button', className: 'sa-button', onClick: () => openInSidebar(preview.path) }, t('openInSidebar'))))
+                        : preview.status === 'sheet-ready' && sheet
+                          ? h(SheetView, { t, sheet, active: sheetActive, onSelect: setSheetActive, onOpenSidebar: openInSidebar, path: preview.path })
+                          : preview.status === 'unsupported'
+                      ? h('div', { className: 'sa-preview-note' },
+                          h('strong', null, basename(preview.path)),
+                          h('div', { style: { margin: '6px 0 10px' } }, t('previewUnsupported')),
+                          h('button', { type: 'button', className: 'sa-button', onClick: () => openInSidebar(preview.path) }, t('openInSidebar')))
+                    : /\.(md|markdown)$/i.test(preview.path)
+                      ? h('div', { className: 'sa-preview-editor', style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 } },
+                          h('div', { className: 'sa-preview-toolbar' },
+                            h('span', {
+                              className: 'sa-save-state',
+                              'data-kind': saveState.kind,
+                              title: saveState.kind === 'error' ? saveState.message : undefined,
+                            }, saveStateLabel(saveState)),
+                            saveState.kind === 'conflict' && h('button', {
+                              type: 'button', className: 'sa-button', onClick: () => { void saveDraft(draft, { force: true }) },
+                            }, t('overwriteSave'))),
+                          h('div', { className: 'sa-preview-split' },
+                            h('textarea', {
+                              className: 'sa-preview-source', value: draft, spellCheck: false,
+                              onChange: (event) => setDraft(event.target.value),
+                            }),
+                            h('div', { className: 'sa-preview-render', ref: previewRenderRef, dangerouslySetInnerHTML: { __html: markdownHtmlOf(preview.path, draft) } })))
+                      : h('div', { className: 'sa-preview-md', dangerouslySetInnerHTML: { __html: escapePreview(markdownHtmlOf(preview.path, preview.content)) } }))),
           railOpen && h(HistoryRail, {
             t,
             data,
@@ -2595,6 +3074,11 @@ window.__ModuleLoader__.load({
             onRefresh: () => { catalog.reload().catch(() => {}) },
             onClose: toggleRail,
           })),
+
+        !railOpen && h('button', {
+          type: 'button', className: 'sa-rail-restore', title: t('showHistory'),
+          onClick: () => { setRailOpen(true); try { window.localStorage.setItem(RAIL_VISIBLE_KEY, '1') } catch { /* ignore */ } },
+        }, t('showHistoryShort')),
         newOpen && h(NewConversationDialog, {
           t,
           workspaces: data ? data.workspaces : [],
@@ -2605,7 +3089,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale', 'sessions', 'uiWorkspace'],
+      inject: ['slots', 'locale', 'sessions', 'uiWorkspace', 'sidebarRight'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh: DICT.zh, en: DICT.en }), 'dsh-super-agent: locale')
         const translate = ctx.locale.bind(NS)
@@ -2613,6 +3097,100 @@ window.__ModuleLoader__.load({
           const text = translate(key)
           if (!values) return text
           return String(text).replace(/\{(\w+)\}/g, (_, name) => values[name] === undefined ? '' : String(values[name]))
+        }
+        // ---- sidebarRight surface fallback ----
+        // This panel owns the main column (layout.panelInfo.activePanelId ===
+        // 'superagent'), and dsh-client-ui-sidebar-right only mounts a session
+        // surface while the default conversation view owns the column
+        // (activePanelId === null). File links (openResource) and web links
+        // (openTab('browser')) therefore throw 'sidebarRight: no session
+        // surface is mounted' and nothing opens. Catch exactly that case,
+        // switch the default conversation view to the panel's session (which
+        // mounts its surface), then retry the same call. Every other error
+        // passes through untouched.
+        const __sb = ctx.sidebarRight
+        if (__sb && typeof __sb === 'object') {
+          const __sessionOfAddress = (address) => {
+            const match = /^dsh-resource:\/\/file\/session\/([^/]+)(?:\/|$)/.exec(String(address || ''))
+            if (!match) return undefined
+            try { return decodeURIComponent(match[1]) } catch { return match[1] }
+          }
+          // Route an absolute file address to the session whose workspace owns
+          // the path. The address's own session is the viewing conversation in
+          // this panel (often the Super Agent session), while a worker-produced
+          // file lives under that worker's workspace — the previewer would
+          // refuse it as `outside-workspace`.
+          const __ownerSessionOfPath = (absolutePath) => {
+            const path = String(absolutePath || '').replace(/\/+$/, '')
+            if (!path.startsWith('/')) return undefined
+            let best
+            for (const entry of knownWorkspaces) {
+              if (path === entry.workspacePath || path.startsWith(entry.workspacePath + '/')) {
+                if (best === undefined || entry.workspacePath.length > best.workspacePath.length) best = entry
+              }
+            }
+            return best
+          }
+          const __rewriteAddress = (address) => {
+            const value = String(address || '')
+            const match = /^dsh-resource:\/\/file\/session\/([^/]+)\/(.*)$/.exec(value)
+            if (match === null) return value
+            let currentSession
+            let rawPath
+            try { currentSession = decodeURIComponent(match[1]) } catch { currentSession = match[1] }
+            try { rawPath = match[2].split('/').map((segment) => decodeURIComponent(segment)).join('/') } catch { rawPath = match[2] }
+            const owner = __ownerSessionOfPath(rawPath)
+            if (owner === undefined || owner.sessionId === currentSession) return value
+            const encodedId = encodeURIComponent(owner.sessionId).replace(/%3A/gi, ':')
+            const encodedPath = rawPath.split('/').map((segment) => encodeURIComponent(segment).replace(/%3A/gi, ':')).join('/')
+            return `dsh-resource://file/session/${encodedId}/${encodedPath}`
+          }
+          const __fallbackSession = (address) => __sessionOfAddress(address)
+            ?? activeSessionId
+            ?? ctx.sessions.list.getSnapshot().current
+          const __mountThen = (sessionId, retry) => {
+            let attempts = 0
+            const attempt = () => {
+              attempts += 1
+              try {
+                const list = ctx.sessions.list.getSnapshot()
+                if (list.phase === 'ready' && list.byId[sessionId]) ctx.uiWorkspace.openSession(sessionId)
+                else if (typeof ctx.sessions.refresh === 'function') void ctx.sessions.refresh()
+              } catch (openError) {
+                console.error('[dsh-super-agent] session view switch failed', openError, { sessionId })
+              }
+              try { retry() }
+              catch (retryError) {
+                const msg = retryError instanceof Error ? retryError.message : String(retryError)
+                if (/no session surface is mounted/.test(msg) && attempts < 8) setTimeout(attempt, 200)
+                else console.error('[dsh-super-agent] sidebar open fallback exhausted', retryError, { sessionId })
+              }
+            }
+            setTimeout(attempt, 0)
+          }
+          const __wrapSidebarCall = (name) => {
+            const original = __sb[name]
+            if (typeof original !== 'function') return
+            const bound = original.bind(__sb)
+            __sb[name] = (...args) => {
+              const rawAddress = typeof args[0] === 'string' ? args[0] : undefined
+              const address = rawAddress === undefined ? rawAddress : __rewriteAddress(rawAddress)
+              if (address !== rawAddress) args[0] = address
+              try {
+                return bound(...args)
+              } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error)
+                if (!/no session surface is mounted/.test(msg)) throw error
+                const sessionId = __fallbackSession(address)
+                console.warn(`[dsh-super-agent] sidebarRight.${name} has no session surface; opening via the session view`, { sessionId, address })
+                if (sessionId === undefined) throw error
+                __mountThen(sessionId, () => bound(...args))
+                return undefined
+              }
+            }
+          }
+          __wrapSidebarCall('openResource')
+          __wrapSidebarCall('openTab')
         }
         let stockChat = readStockChatFlag()
         ctx.slots.inject('main', () => ctx.slots.register(

@@ -309,8 +309,18 @@ test('the Markdown fallback keeps fenced code intact and model text as React chi
 
 test('the client has no raw HTML sink for model text', async () => {
   const source = await readFile(join(import.meta.dirname, '..', 'client.js'), 'utf8')
-  assert.equal(/dangerouslySetInnerHTML/.test(source), false)
+  // Model text never reaches raw HTML: bubbles, notices, and pending cards all
+  // render through the stock Markdown primitive, and the imperative sink stays
+  // banned everywhere.
   assert.equal(/\.innerHTML\s*=/.test(source), false)
+  // The single admitted raw-HTML consumer is the file preview pane, which shows
+  // a file's own Markdown rather than model output. Every such value must come
+  // from the md-editor renderer or its escaping fallback, never from message
+  // content passed straight through.
+  const sinks = [...source.matchAll(/dangerouslySetInnerHTML:\s*\{\s*__html:\s*([^}]+?)\}\s*\}/g)]
+    .map((match) => match[1])
+  assert.ok(sinks.length > 0, 'the preview pane renders Markdown as HTML')
+  for (const sink of sinks) assert.match(sink, /(?:markdownHtmlOf|escapePreview)\(/)
   assert.match(source, /require\('@deepseek-ai\/dsh-client-ui-primitives'\)/)
 })
 
