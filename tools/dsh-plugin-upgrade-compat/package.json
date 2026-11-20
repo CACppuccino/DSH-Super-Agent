@@ -1,0 +1,17 @@
+{
+  "name": "@local/dsh-plugin-upgrade-compat-skill",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DSH skill: scan and adapt every installed plugin after a core upgrade.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/unit.test.mjs tests/adapt.test.mjs",
+    "scan": "node scripts/compat-scan.mjs",
+    "scan:fast": "node scripts/compat-scan.mjs --no-tests",
+    "adapt": "node scripts/compat-adapt.mjs",
+    "baseline": "node scripts/compat-scan.mjs --write-baseline --no-tests"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

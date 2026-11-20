@@ -1,0 +1,213 @@
+{
+  "schemaVersion": 1,
+  "rulesVersion": "2026-11-20.1",
+  "coreVersionAtCreation": "0.2.2-rc.3",
+  "about": "Versioned rename/removal rules. Each rule cites the DSH upgrade-guide file that documents it; compat-adapt.mjs only applies a rule whose subject matches an observed scan finding. No rule, no edit: the finding is reported as NEEDS_MANUAL.",
+  "rules": [
+    {
+      "id": "dsh-0.2.2rc1-office-kit-package",
+      "kind": "rename-package",
+      "since": "0.2.2-alpha.3",
+      "match": {
+        "check": "import.package",
+        "package": "@deepseek-ai/dsh-office-to-pdf"
+      },
+      "replace": {
+        "old": "@deepseek-ai/dsh-office-to-pdf",
+        "new": "@deepseek-ai/dsh-office-kit"
+      },
+      "source": "docs/upgrade-guide/v0.2.2-alpha.3/office-kit-package/guide.md",
+      "note": "Also renames ctx.officeToPdf to ctx.officeKit and the OfficeToPdf* exported symbols."
+    },
+    {
+      "id": "dsh-0.2.2rc1-office-kit-service",
+      "kind": "rename-service",
+      "since": "0.2.2-alpha.3",
+      "match": {
+        "check": "service.inject",
+        "service": "officeToPdf"
+      },
+      "replace": {
+        "old": "officeToPdf",
+        "new": "officeKit",
+        "scope": "service-name"
+      },
+      "source": "docs/upgrade-guide/v0.2.2-alpha.3/office-kit-package/guide.md",
+      "detect": {
+        "pattern": "ctx\\.officeToPdf\\b",
+        "check": "service.usage",
+        "status": "DEGRADED",
+        "message": "Uses ctx.officeToPdf, renamed to ctx.officeKit by @deepseek-ai/dsh-office-kit"
+      }
+    },
+    {
+      "id": "dsh-0.2.2rc1-account-platform",
+      "kind": "rename-package",
+      "since": "0.2.2-rc.1",
+      "match": {
+        "check": "import.package",
+        "package": "@deepseek-ai/dsh-deepseek-account-platform"
+      },
+      "replace": {
+        "old": "@deepseek-ai/dsh-deepseek-account-platform",
+        "new": "@deepseek-ai/dsh-deepseek-account"
+      },
+      "source": "docs/upgrade-guide/v0.2.2-rc.1/account-remote-provider/guide.md",
+      "note": "Import DeepSeekAccount instead of PlatformAccount; /remote and /typert entries move with the package."
+    },
+    {
+      "id": "dsh-0.2.2rc1-account-controller-service",
+      "kind": "rename-service-access",
+      "since": "0.2.2-rc.1",
+      "match": {
+        "check": "service.optional",
+        "service": "accountController"
+      },
+      "replace": {
+        "old": "accountController",
+        "new": "deepseekAccount",
+        "scope": "ctx.get-argument"
+      },
+      "unlessPresent": "deepseekAccount",
+      "source": "docs/upgrade-guide/v0.2.2-rc.1/account-remote-provider/guide.md",
+      "note": "The abstract account controller is removed; the concrete service is ctx.deepseekAccount."
+    },
+    {
+      "id": "dsh-0.2.2rc1-bundle-update-field",
+      "kind": "rename-field",
+      "since": "0.2.2-rc.1",
+      "match": {
+        "check": "import.symbol",
+        "symbol": "updatable"
+      },
+      "replace": {
+        "old": "updatable",
+        "new": "update",
+        "scope": "property"
+      },
+      "source": "docs/upgrade-guide/v0.2.2-rc.1/plugin-update-method/guide.md",
+      "note": "BundleInfo.updatable is replaced by BundleInfo.update: 'registry' | 'git' | undefined.",
+      "detect": {
+        "pattern": "\\.updatable\\b",
+        "check": "api.renamed-property",
+        "status": "DEGRADED",
+        "message": "Reads .updatable, replaced by BundleInfo.update ('registry' | 'git' | undefined)"
+      }
+    },
+    {
+      "id": "dsh-0.2.1a1-web-runtime-service",
+      "kind": "rename-service",
+      "since": "0.2.1-alpha.1",
+      "match": {
+        "check": "service.inject",
+        "service": "webRuntime"
+      },
+      "replace": {
+        "old": "webRuntime",
+        "new": "webStartup",
+        "scope": "service-name"
+      },
+      "source": "docs/upgrade-guide/v0.2.1-alpha.1/web-listener-trust-config/guide.md",
+      "note": "ctx.webRuntime.trustedHosts moves to ctx.webStartup.trustedHosts; lanAddresses is removed."
+    },
+    {
+      "id": "dsh-0.2.1a1-jsonl-persistence-default-import",
+      "kind": "rename-import-form",
+      "since": "0.2.1-alpha.1",
+      "match": {
+        "check": "import.symbol",
+        "package": "@deepseek-ai/dsh-session-persistence-jsonl",
+        "symbol": "default"
+      },
+      "replace": {
+        "old": "default",
+        "new": "* as JsonlSessionPersistence",
+        "scope": "import-clause"
+      },
+      "source": "docs/upgrade-guide/v0.2.1-alpha.1/jsonl-persistence-plugin/guide.md",
+      "note": "The package no longer has a default export; mount the namespace plugin instead."
+    },
+    {
+      "id": "dsh-0.2.1rc2-subagent-method-removal",
+      "kind": "manual",
+      "since": "0.2.1-rc.2",
+      "match": {
+        "check": "service.usage",
+        "service": "subagents"
+      },
+      "replace": {
+        "old": "drainChildren|listChildren|list",
+        "new": "",
+        "scope": "method-name"
+      },
+      "source": "docs/upgrade-guide/v0.2.1-rc.2/subagent-service-methods/guide.md",
+      "note": "No drop-in replacement: retain the activation, use sessionQuery observations, or getProvider().",
+      "detect": {
+        "pattern": "ctx\\.subagents\\.(?:drainChildren|listChildren|list)\\s*\\(",
+        "check": "api.removed-method",
+        "status": "BROKEN",
+        "message": "Calls a removed ctx.subagents method (drainChildren / listChildren / list)"
+      }
+    },
+    {
+      "id": "dsh-0.2.0rc2-runtime-invariants",
+      "kind": "manual",
+      "since": "0.2.0-rc.2",
+      "match": {
+        "check": "import.package",
+        "package": "@deepseek-ai/dsh-invariants"
+      },
+      "replace": {
+        "old": "@deepseek-ai/dsh-invariants",
+        "new": "",
+        "scope": "package"
+      },
+      "source": "docs/upgrade-guide/v0.2.0-rc.2/remove-runtime-invariants/guide.md",
+      "note": "The registry and every <package>/invariant subpath are removed; delete the rows and imports."
+    },
+    {
+      "id": "dsh-0.2.1a2-azure-provider-route",
+      "kind": "rename-value",
+      "since": "0.2.1-alpha.2",
+      "match": {
+        "check": "event.unknown",
+        "event": "azure-openai-responses"
+      },
+      "replace": {
+        "old": "azure-openai-responses",
+        "new": "azure",
+        "scope": "provider-key"
+      },
+      "source": "docs/upgrade-guide/v0.2.1-alpha.2/pi-ai-azure-provider/guide.md",
+      "note": "Provider route key only; the Responses API identifier keeps its old name.",
+      "detect": {
+        "pattern": "azure-openai-responses",
+        "check": "api.renamed-provider",
+        "status": "DEGRADED",
+        "message": "Names the Azure provider azure-openai-responses, renamed to azure"
+      }
+    },
+    {
+      "id": "dsh-0.2.2rc1-session-append-overloads",
+      "kind": "manual",
+      "since": "0.2.2-rc.1",
+      "match": {
+        "check": "import.symbol",
+        "symbol": "append"
+      },
+      "replace": {
+        "old": "append",
+        "new": "append",
+        "scope": "method-overload"
+      },
+      "source": "docs/upgrade-guide/v0.2.2-rc.1/session-append-overloads/guide.md",
+      "note": "A Session.append replacement must implement both the single-event and array overloads; this needs a human edit.",
+      "detect": {
+        "pattern": "\\.append\\s*=\\s*(?:async\\s+)?(?:function|\\()",
+        "check": "api.replaced-method",
+        "status": "BROKEN",
+        "message": "Replaces Session.append; the replacement must implement the single-event and array overloads"
+      }
+    }
+  ]
+}

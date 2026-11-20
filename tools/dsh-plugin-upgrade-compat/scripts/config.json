@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "discovery": {
+    "profilesRoot": "~/.dsh/profiles",
+    "exclude": [
+      "(^|/)test-[^/]+/",
+      "/(superagent-prototype|examples|sdk-runtime)(/|$)",
+      "/cloudflare(/|$)"
+    ],
+    "sourceRoots": [
+      { "path": "~/Projects/DSH-Super-Agent/packages", "depth": 1, "role": "repo" },
+      { "path": "~/Projects/dsh", "depth": 2, "role": "workspace" },
+      { "path": "~/.dsh/plugins", "depth": 3, "role": "installed" }
+    ]
+  },
+  "checks": {
+    "runPluginTests": true,
+    "runHostLoadProbe": true,
+    "testTimeoutMs": 300000
+  }
+}
